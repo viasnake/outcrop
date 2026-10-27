@@ -1,6 +1,6 @@
 # Outcrop
 
-Ubuntu Server 24.04 LTS / amd64
+Ubuntu Server 22.04 / 24.04 LTS / amd64
 
 ## インストール
 

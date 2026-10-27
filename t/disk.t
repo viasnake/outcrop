@@ -1,6 +1,9 @@
 use strict;
 use warnings;
 use Test::More;
+use File::Temp qw(tempdir tempfile);
+use Mojo::File qw(path);
+use Mojo::JSON qw(encode_json);
 use lib 'lib';
 use Outcrop::Config;
 use Outcrop::Disk;
@@ -41,6 +44,82 @@ my %nodes = (
     },
 );
 my %parents = ('8:1' => {'8:0' => 1}, '253:0' => {'8:1' => 1}, '8:17' => {'8:16' => 1});
+
+# Exercise discovery with the columns available on Ubuntu 22.04 and real
+# sysfs-shaped files, including offsets that differ from partition numbering.
+{
+
+    package InventoryCommand;
+    use Mojo::Base -base;
+    has 'json';
+
+    sub run {
+        my ($self, $arguments) = @_;
+        die 'Unknown column START' if grep { /\bSTART\b/ } @$arguments;
+        return $self->json;
+    }
+}
+my $sysfs = path(tempdir(CLEANUP => 1));
+for my $number ('8:16', '8:17', '8:18') {
+    $sysfs->child($number, 'slaves')->make_path;
+    $sysfs->child($number, 'holders')->make_path;
+}
+$sysfs->child('8:16', 'diskseq')->spurt("2\n");
+$sysfs->child('8:17', 'start')->spurt("4096\n");
+$sysfs->child('8:18', 'start')->spurt("2048\n");
+my %partition = %{$nodes{'8:17'}};
+delete $partition{start};
+my $discovery_disk = Outcrop::Disk->new(
+    sysfs_root => "$sysfs",
+    command    => InventoryCommand->new(
+        json => encode_json(
+            {
+                blockdevices => [
+                    {
+                        %{$nodes{'8:16'}},
+                        children => [
+                            \%partition,
+                            {
+                                %partition,
+                                name      => '/dev/sdb2',
+                                'maj:min' => '8:18',
+                                partuuid  => 'part-2'
+                            },
+                        ]
+                    },
+                ]
+            }
+        )
+    ),
+);
+my ($discovered, $discovered_parents) = $discovery_disk->_read_block_devices;
+$discovery_disk->_read_sysfs($discovered, $discovered_parents, {});
+my $discovered_inventory =
+    $discovery_disk->classify($discovered, $discovered_parents, {}, [], 'boot-1');
+my $discovered_targets = $discovered_inventory->{disks}[0]{targets};
+is_deeply(
+    [map { $_->{name} } @$discovered_targets],
+    ['/dev/sdb2', '/dev/sdb1'],
+    'Partitions are ordered by sysfs start sector without the lsblk START column'
+);
+ok($discovered_targets->[0]{selectable}, 'A clone discovered without START remains selectable');
+is($discovered_targets->[0]{identity}{partition}{start},
+    2048, 'Partition identity retains the numeric start sector');
+my $discovered_token = $discovered_targets->[0]{token};
+$sysfs->child('8:18', 'start')->spurt("1024\n");
+$discovery_disk->_read_sysfs($discovered, $discovered_parents, {});
+isnt(
+    $discovery_disk->classify($discovered, $discovered_parents, {}, [], 'boot-1')
+        ->{disks}[0]{targets}[0]{token},
+    $discovered_token,
+    'A changed partition offset invalidates the selection token'
+);
+$sysfs->child('8:18', 'start')->spurt("invalid\n");
+eval { $discovery_disk->_read_sysfs($discovered, $discovered_parents, {}) };
+like($@, qr/Invalid partition start/, 'Malformed partition geometry fails closed');
+unlink $sysfs->child('8:18', 'start') or die $!;
+ok(!eval { $discovery_disk->_read_sysfs($discovered, $discovered_parents, {}); 1 },
+    'Missing partition geometry fails closed');
 
 sub classify {
     my ($busy_devices, $discovery_errors) = @_;
@@ -161,13 +240,40 @@ like($@, qr/source verification/, 'A different actual mount source is rejected')
 
     package SequenceDisk;
     use Mojo::Base 'Outcrop::Disk';
-    sub device_path { return '/dev/fictional' }
+    has sequences       => sub { [999] };
+    has checked_handles => sub { [] };
+
+    sub _disk_sequence {
+        my ($self, $handle) = @_;
+        push @{$self->checked_handles}, $handle;
+        return shift @{$self->sequences};
+    }
 }
 my $sequence_command = SequenceCommand->new;
 my $sequence_disk    = SequenceDisk->new(command => $sequence_command);
-eval { $sequence_disk->make_readonly({identity => {disk => {diskseq => 2}}}) };
+my $sequence_target  = {identity => {disk => {diskseq => 2}}, handles => ['disk', 'partition']};
+eval { $sequence_disk->make_readonly($sequence_target) };
 like($@, qr/sequence changed/, 'Opened device with changed kernel sequence is rejected');
-is_deeply($sequence_command->calls, ['--getdiskseq'], 'A changed open device never reaches setro');
+is_deeply($sequence_command->calls, [], 'A changed open device never reaches setro');
+$sequence_disk->sequences([2, 999])->checked_handles([]);
+eval { $sequence_disk->make_readonly($sequence_target) };
+like($@, qr/sequence changed/, 'A changed partition descriptor is also rejected');
+is_deeply(
+    $sequence_disk->checked_handles,
+    ['disk', 'partition'],
+    'Sequence checks use both held descriptors'
+);
+is_deeply($sequence_command->calls, [], 'A changed partition never reaches setro');
+$sequence_disk->sequences([2, 2]);
+ok(
+    eval { $sequence_disk->verify_sequence($sequence_target); 1 },
+    'Matching disk and partition sequences pass verification'
+);
+my ($ordinary_file) = tempfile;
+eval { $disk->_disk_sequence($ordinary_file) };
+like($@, qr/Read kernel disk sequence/, 'An unsupported ioctl fails closed');
+eval { $disk->verify_sequence({identity => {disk => {diskseq => 2}}}) };
+like($@, qr/descriptor unavailable/, 'Sequence checks require held device descriptors');
 
 # Live-host selection is independent of block-device support and never invokes
 # a device command. Its token changes when the mounted root changes.

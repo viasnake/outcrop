@@ -8,9 +8,13 @@ use Cwd         qw(abs_path);
 use Fcntl       qw(O_RDONLY O_NONBLOCK);
 use Outcrop::Command;
 
+# Linux amd64: _IOR(0x12, 128, __u64), available since Linux 5.15.
+use constant BLKGETDISKSEQ => 0x80081280;
+
 has 'config';
-has command  => sub { Outcrop::Command->new };
-has app_root => sub { abs_path('.') };
+has command    => sub { Outcrop::Command->new };
+has app_root   => sub { abs_path('.') };
+has sysfs_root => '/sys/dev/block';
 
 sub device_number {
     my ($self, $file) = @_;
@@ -128,7 +132,7 @@ sub _read_block_devices {
 
     my @columns = qw(
         NAME KNAME TYPE SIZE RO MAJ:MIN PKNAME FSTYPE UUID PARTUUID
-        PTTYPE PARTTYPE SERIAL WWN MODEL MOUNTPOINTS START
+        PTTYPE PARTTYPE SERIAL WWN MODEL MOUNTPOINTS
     );
     my $json = $self->command->run(
         [
@@ -165,8 +169,17 @@ sub _read_sysfs {
     # lsblk supplies partition relationships; sysfs adds dependencies beneath
     # device-mapper and RAID so host LVM never conceals its physical disks.
     for my $number (keys %$nodes) {
-        my $device_directory = path('/sys/dev/block', $number);
+        my $device_directory = path($self->sysfs_root, $number);
         die "Missing sysfs device $number" unless -d $device_directory;
+
+        # Ubuntu 22.04's lsblk has no START column. sysfs exposes the same
+        # offset in 512-byte sectors; missing partition geometry must fail closed.
+        if ($nodes->{$number}{type} eq 'part') {
+            my $start = $device_directory->child('start')->slurp;
+            $start =~ s/\s+\z//;
+            die "Invalid partition start for $number" unless $start =~ /\A\d+\z/;
+            $nodes->{$number}{start} = 0 + $start;
+        }
 
         for my $slave ($device_directory->child('slaves')->list->each) {
             my $backing_number = path($slave, 'dev')->slurp;
@@ -380,11 +393,20 @@ sub verify_sequence {
     # Handle 0 is the whole disk; handle 1 is the selected filesystem. A
     # partition reports its parent disk's sequence, so both must still agree.
     for my $index (0, 1) {
-        my $actual = $self->command->run(
-            ['/usr/sbin/blockdev', '--getdiskseq', $self->device_path($target, $index)]);
-        $actual =~ s/\s+\z//;
+        my $handle = $target->{handles}[$index] or die 'Verified device descriptor unavailable';
+        my $actual = $self->_disk_sequence($handle);
         die 'Kernel disk sequence changed' unless $actual eq $target->{identity}{disk}{diskseq};
     }
+}
+
+sub _disk_sequence {
+    my ($self, $handle) = @_;
+
+    # Ubuntu 22.04's blockdev lacks --getdiskseq. Query the held descriptor
+    # directly so hotplug cannot redirect this check to a replacement device.
+    my $sequence = pack('Q', 0);
+    ioctl($handle, BLKGETDISKSEQ, $sequence) or die "Read kernel disk sequence: $!";
+    return unpack('Q', $sequence);
 }
 
 sub make_readonly {
