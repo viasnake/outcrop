@@ -45,6 +45,30 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now outcrop-worker.service outcrop-web.service
 ```
 
+## 更新
+
+実行中のスキャンが終わってから更新してください。以下は標準の `/opt/outcrop` 配置用です。別の場所に配置している場合は、コマンド中のパスとコピーするサービス定義の `WorkingDirectory` を実際の配置先に合わせてください。
+
+```sh
+sudo sh -eu <<'SH'
+cd /opt/outcrop
+umask 0022
+systemctl stop outcrop-web.service outcrop-worker.service
+git pull --ff-only
+env PERL_CARTON_MIRROR=https://cpan.metacpan.org \
+  /usr/bin/carton install --deployment --without develop
+chown -R root:root /opt/outcrop
+chmod -R go-w /opt/outcrop
+cp systemd/outcrop-worker.service systemd/outcrop-web.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl start outcrop-worker.service
+systemctl start outcrop-web.service
+systemctl --no-pager --full status outcrop-worker.service outcrop-web.service
+SH
+```
+
+`Root must own ... and deny group/other writes` は、表示されたパスが root 所有でないか、グループ・その他のユーザーに書き込みが許可されている場合に出ます。root での `git pull` でも、`umask 0002` なら更新ファイルが `0664` になり、起動できません。上の手順は `umask 0022` で更新し、既存ファイル・依存ライブラリの所有者と権限も整えます。途中で失敗した場合はサービスを停止したまま終了するため、エラーを解消してから再実行してください。
+
 ## 利用
 
 ```sh

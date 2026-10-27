@@ -15,8 +15,11 @@ sub trusted_path {
     my $resolved = abs_path($file) or die "Missing trusted path: $file";
     while (1) {
         my @stat = stat $resolved;
-        die "Root must own $resolved and deny group/other writes"
-            unless @stat && $stat[4] == 0 && !($stat[2] & 0022);
+        die "Cannot stat trusted path $resolved: $!\n" unless @stat;
+        die sprintf("Root must own %s and deny group/other writes (uid=%d gid=%d mode=%04o). "
+                . "See the README update instructions.\n",
+            $resolved, $stat[4], $stat[5], $stat[2] & 07777)
+            unless $stat[4] == 0 && !($stat[2] & 0022);
         last if $resolved eq '/';
         $resolved = path($resolved)->dirname->to_string;
     }
