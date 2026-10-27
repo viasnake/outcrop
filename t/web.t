@@ -234,4 +234,55 @@ $store->atomic_json("$root/inventory.json", $inventory);
 $t->post_ok('/scans' => form => \%host_form)->status_is(409);
 is(job_count(), 2, 'Forged targets, stale inventory, and residual mounts cannot create scan jobs');
 
+# Polling renders current disk controls even while earlier scans are active.
+$inventory->{updated_at} = time;
+$inventory->{blocked}    = [];
+my $new_token = 'd' x 64;
+my $new_disk  = {
+    name    => '/dev/hotplug',
+    targets => [
+        {
+            name       => '/dev/hotplug1',
+            token      => $new_token,
+            fstype     => 'ext4',
+            selectable => 1,
+            reasons    => [],
+            size       => 1000,
+        }
+    ],
+};
+push @{$inventory->{disks}}, $new_disk;
+$store->atomic_json("$root/inventory.json", $inventory);
+$queue->add_task(scan => sub { });
+my $running_worker = $queue->worker->register;
+my $running_job    = $running_worker->dequeue(0, {tasks => ['scan']});
+ok($running_job, 'Existing scan is active during hotplug submission');
+$t->get_ok('/inventory')
+    ->status_is(200)
+    ->header_is('Cache-Control', 'no-store')
+    ->element_exists('input[value="' . $new_token . '"]')
+    ->element_exists_not('textarea[name="note"]');
+my $async_id   = Outcrop::random_id();
+my %async_form = (csrf_token => $csrf, scan_id => $async_id, target => $new_token, clone => 'yes');
+$t->post_ok('/scans' => {Accept => 'application/json'} => form => \%async_form)
+    ->status_is(202)
+    ->json_is('/id',  $async_id)
+    ->json_is('/url', "/scans/$async_id");
+like($t->tx->res->json->{next_id}, qr/\A[0-9a-f]{32}\z/,
+    'Response supplies the next submission ID');
+$t->post_ok('/scans' => {Accept => 'application/json'} => form => \%async_form)
+    ->status_is(200)
+    ->json_is('/id', $async_id);
+is(job_count(), 3, 'Retrying an asynchronous submission is idempotent');
+$async_form{scan_id} = Outcrop::random_id();
+$t->post_ok('/scans' => {Accept => 'application/json'} => form => \%async_form)->status_is(409);
+is(job_count(), 3, 'A second submission ID cannot duplicate a pending target');
+$inventory->{updated_at} = time - 60;
+$store->atomic_json("$root/inventory.json", $inventory);
+$t->get_ok('/inventory')
+    ->status_is(200)
+    ->element_exists('input[value="' . $new_token . '"][disabled]');
+$running_job->finish;
+$running_worker->unregister;
+
 done_testing;

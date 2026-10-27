@@ -66,16 +66,80 @@ for (const editor of document.querySelectorAll('[data-tag-input]')) {
   });
 }
 
-// Give immediate feedback; the server's submission lock enforces idempotency.
-for (const form of document.querySelectorAll('[data-submit-once]')) {
-  updateCloneConfirmation(form);
-  form.addEventListener('change', () => updateCloneConfirmation(form));
-  form.addEventListener('submit', event => {
+// Refresh only disk controls; drafts and the submission ID stay in place.
+for (const form of document.querySelectorAll('[data-scan-form]')) {
+  const panel = form.querySelector('[data-inventory-panel]');
+  const inventoryStatus = document.querySelector('[data-inventory-status]');
+  const submit = form.querySelector('button[type="submit"]');
+  let submitting = false;
+  let refreshing = false;
+
+  function updateControls() {
+    updateCloneConfirmation(form);
+    const selected = form.querySelector('input[name="target"]:checked:not(:disabled)');
+    submit.disabled = submitting || !selected;
+  }
+
+  async function refreshInventory() {
+    if (refreshing || submitting) return;
+    refreshing = true;
+    try {
+      const response = await fetch('/inventory', {cache: 'no-store', signal: AbortSignal.timeout(15000)});
+      if (!response.ok) throw new Error('ディスク一覧を更新できません。再試行します。');
+      const html = await response.text();
+      // Selection may change while the request is in flight.
+      const selected = form.querySelector('input[name="target"]:checked')?.value;
+      const fragment = document.createElement('template');
+      fragment.innerHTML = html;
+      panel.replaceChildren(fragment.content);
+      for (const input of panel.querySelectorAll('input[name="target"]')) {
+        input.checked = input.value === selected && !input.disabled;
+      }
+      inventoryStatus.textContent = '';
+    } catch (error) {
+      inventoryStatus.textContent = 'ディスク一覧を更新できません。再試行します。';
+      // An old selection must not look current after a failed refresh.
+      panel.querySelectorAll('input[name="target"]').forEach(input => {input.disabled = true;});
+    } finally {
+      refreshing = false;
+      updateControls();
+    }
+  }
+
+  form.addEventListener('change', updateControls);
+  form.addEventListener('submit', async event => {
     if (event.defaultPrevented) return;
-    const button = form.querySelector('button[type="submit"]');
-    button.disabled = true;
-    button.textContent = '送信中…';
+    event.preventDefault();
+    if (submitting) return;
+    const body = new URLSearchParams(new FormData(form));
+    const status = form.querySelector('[data-scan-status]');
+    submitting = true;
+    updateControls();
+    submit.textContent = '送信中…';
+    try {
+      const response = await fetch(form.action, {
+        method: 'POST', body, headers: {Accept: 'application/json'},
+        signal: AbortSignal.timeout(15000)
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const result = await response.json();
+      form.elements.scan_id.value = result.next_id;
+      const link = document.createElement('a');
+      link.href = result.url;
+      link.className = 'underline';
+      link.textContent = '進捗を確認';
+      status.replaceChildren('スキャンを受け付けました。続けて別のディスクを追加できます。 ', link);
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      submitting = false;
+      submit.textContent = 'スキャン開始';
+      updateControls();
+      refreshInventory();
+    }
   });
+  updateControls();
+  setInterval(refreshInventory, 5000);
 }
 
 // Back/forward navigation can restore a form with its submitting state intact.

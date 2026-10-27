@@ -28,6 +28,13 @@ sub startup {
     # outside startup so session and request protections remain easy to inspect.
     my $routes = $self->routes;
     $routes->get('/')->to(cb => sub { $self->_show_index(@_) });
+    $routes->get('/inventory')->to(
+        cb => sub {
+            my ($controller) = @_;
+            $controller->res->headers->cache_control('no-store');
+            $controller->render(template => 'inventory', inventory => $self->inventory);
+        }
+    );
     $routes->get('/history')->to(cb => sub { $self->_show_history(@_) });
     $routes->post('/scans')->to(cb => sub { $self->_start_scan(@_) });
     $routes->get('/scans/:id')->to(cb => sub { $self->_show_scan(@_) });
@@ -267,7 +274,7 @@ sub _start_scan {
     flock($lock, LOCK_EX) or die "Submission lock: $!";
 
     my $id = $request->{id};
-    return $controller->redirect_to("/scans/$id") if $self->_submission_exists($id);
+    return $self->_submission_response($controller, $id, 200) if $self->_submission_exists($id);
     my $target = $self->_selectable_target($request->{token});
     return $controller->render(
         text   => '対象情報が古いか選択できません。一覧を更新してください。',
@@ -276,9 +283,26 @@ sub _start_scan {
     return $controller->render(text => 'クローンディスクであることの確認が必要です。', status => 400)
         unless ($target->{kind} // '') eq 'host' || ($controller->param('clone') // '') eq 'yes';
 
+    return $controller->render(text => 'この対象はすでに待機中または実行中です。', status => 409)
+        if grep { $_->{token} eq $request->{token} } @{$self->pending_scans};
     $self->queue->enqueue(scan => [$request], {attempts => 1});
-    $controller->res->code(303);
-    $controller->redirect_to("/scans/$id");
+    return $self->_submission_response($controller, $id, 202);
+}
+
+sub _submission_response {
+    my ($self, $controller, $id, $status) = @_;
+    if (($controller->req->headers->accept // '') =~ /application\/json/) {
+        return $controller->render(
+            status => $status,
+            json   => {
+                id      => $id,
+                url     => "/scans/$id",
+                next_id => random_id(),
+            }
+        );
+    }
+    $controller->res->code($status == 200 ? 302 : 303);
+    return $controller->redirect_to("/scans/$id");
 }
 
 sub _submission_exists {

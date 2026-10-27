@@ -1,113 +1,16 @@
 % layout 'default';
 % title 'スキャン — Outcrop';
-% my $host = $inventory->{host};
-% my $has_host = $host && $host->{selectable};
-% my $has_target = $has_host || grep { $_->{selectable} } map { @{$_->{targets}} } @{$inventory->{disks}};
-% my @disks = @{$inventory->{disks}};
-% my @system_disks = grep { $_->{system_root} } @disks;
-% if ($has_host && !@system_disks) {
-%     unshift @disks, {name => $host->{identity}{disk}{name} // 'システム領域', system_root => 1, targets => []};
-% }
-% my $host_selected = 0;
-% my $unavailable = $inventory->{stale} || @{$inventory->{blocked} // []};
 <h1 class="mb-6 text-2xl font-semibold tracking-tight wrap-anywhere sm:text-3xl">スキャン</h1>
 
-% if ($inventory->{stale}) {
-<p class="my-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-amber-900 wrap-anywhere">ディスク情報を更新できません。Worker の稼働を確認してください。</p>
-% }
-% if (@{$inventory->{errors} // []}) {
-<details class="my-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-amber-900 wrap-anywhere">
-    <summary class="cursor-pointer font-semibold group-open:mb-5">ディスクを検出できません</summary>
-    % for my $error (@{$inventory->{errors}}) {
-    <pre class="mt-3 font-mono text-xs whitespace-pre-wrap wrap-anywhere"><%= $error %></pre>
-    % }
-</details>
-% }
-% if (@{$inventory->{blocked} // []}) {
-<aside class="my-5 rounded-md border border-red-200 bg-red-50 p-4 text-red-900 wrap-anywhere">
-    <strong>マウントが残っています。アンマウントするまでスキャンできません。</strong>
-    <ul class="mt-3 list-disc space-y-1 pl-5">
-    % for my $mount (@{$inventory->{blocked}}) {
-        <li><%= $mount %></li>
-    % }
-    </ul>
-</aside>
-% }
-
-<form method="post" action="/scans" <%= $has_target ? 'data-submit-once' : '' %>>
+<p class="mb-4 text-sm text-slate-600">ディスク一覧は自動更新されます。実行中でも追加でき、空きがなければ待機します。</p>
+<p class="text-sm text-slate-600" role="status" data-inventory-status></p>
+<form method="post" action="/scans" data-submit-once data-scan-form>
     %= csrf_field
     <input type="hidden" name="scan_id" value="<%= $scan_id %>">
-<section class="my-6 min-w-0 rounded-lg border border-slate-200 bg-white p-4 sm:p-6">
-    <h2 class="mb-5 text-lg font-semibold">スキャンするディスク</h2>
+    <div data-inventory-panel>
+        %= include 'inventory', inventory => $inventory
+    </div>
 
-        <div class="space-y-4" data-disk-list>
-        % for my $disk (@disks) {
-        % my $is_system = $disk->{system_root} && $has_host;
-        % my $checked = $is_system && !$host_selected;
-        % $host_selected = 1 if $is_system;
-        % my $selectable = grep { $_->{selectable} } @{$disk->{targets}};
-        % my $reasons = exclusion_reasons($disk->{reasons} // []);
-        % my %disk_reasons = map { $_ => 1 } @{$disk->{reasons} // []};
-        <div class="overflow-hidden rounded-md border border-slate-200" role="group" aria-label="<%= $disk->{name} %>">
-            <div class="flex flex-wrap items-baseline gap-x-4 gap-y-2 px-4 py-3 text-xs wrap-anywhere">
-                <strong class="font-mono text-xs wrap-anywhere"><%= $disk->{name} %></strong>
-                % if (defined $disk->{size}) {
-                <span><%= sprintf('%.1f GiB', $disk->{size} / 1073741824) %></span>
-                % }
-                <span class="ml-auto text-slate-600"><%= $is_system ? 'システム' : $selectable ? '選択可' : '選択不可' %></span>
-            </div>
-            % if ($disk->{serial} || $disk->{wwn}) {
-            <p class="mb-3 px-4 text-xs text-slate-600 wrap-anywhere">
-                % if ($disk->{serial}) {
-                Serial: <%= $disk->{serial} %>
-                % }
-                % if ($disk->{wwn}) {
-                WWN: <%= $disk->{wwn} %>
-                % }
-            </p>
-            % }
-            % if ($is_system) {
-            <label class="flex items-start gap-3 border-t border-slate-200 px-4 py-3 has-checked:bg-blue-50 has-disabled:bg-slate-50 has-disabled:text-slate-500 [&>span]:min-w-0 [&>span]:wrap-anywhere">
-                <input class="mt-1.5 size-4 shrink-0 accent-blue-700" type="radio" name="target" value="<%= $host->{token} %>" data-target-kind="host"
-                       <%= $checked ? 'checked' : '' %> required <%= $unavailable ? 'disabled' : '' %>>
-                <span>
-                    <strong>システム領域</strong>
-                    <%= display($host->{identity}{partition}{fstype}) %>
-                </span>
-            </label>
-            % } else {
-            % if (@$reasons) {
-            <p class="mb-3 px-4 text-xs text-red-700 wrap-anywhere"><%= join(' · ', @$reasons) %></p>
-            % }
-            % for my $target (@{$disk->{targets}}) {
-            % my @mountpoints = grep { defined $_ && length $_ } @{$target->{mountpoints} // []};
-            % my $disabled = !$target->{selectable} || $unavailable;
-            % my $target_reasons = exclusion_reasons([grep { !$disk_reasons{$_} } @{$target->{reasons}}]);
-            <label class="flex items-start gap-3 border-t border-slate-200 px-4 py-3 has-checked:bg-blue-50 has-disabled:bg-slate-50 has-disabled:text-slate-500 [&>span]:min-w-0 [&>span]:wrap-anywhere">
-                <input class="mt-1.5 size-4 shrink-0 accent-blue-700" type="radio" name="target" value="<%= $target->{token} %>" data-target-kind="clone"
-                       required <%= $disabled ? 'disabled' : '' %>>
-                <span>
-                    <strong><%= $target->{name} %></strong>
-                    <%= display($target->{fstype}) %>
-                    · <%= sprintf('%.1f GiB', ($target->{size} // 0) / 1073741824) %>
-                    <small class="block text-xs text-slate-500"><%= @mountpoints ? join(', ', @mountpoints) : '未マウント' %></small>
-                    % if (@$target_reasons) {
-                    <span class="mt-1 block text-xs text-red-700"><%= join(' · ', @$target_reasons) %></span>
-                    % }
-                </span>
-            </label>
-            % }
-            % if (!@{$disk->{targets}}) {
-            <p class="mb-3 px-4 text-xs text-slate-600 wrap-anywhere">スキャンできるファイルシステムがありません。</p>
-            % }
-            % }
-        </div>
-        % }
-        </div>
-
-</section>
-
-% if ($has_target) {
 <section class="my-6 min-w-0 rounded-lg border border-slate-200 bg-white p-4 sm:p-6" data-tag-input>
     <h2 class="mb-5 text-lg font-semibold">タグ</h2>
     <div class="flex flex-wrap gap-1.5 not-empty:mb-4" data-initial-tags></div>
@@ -126,13 +29,11 @@
     <textarea class="mt-1 block w-full min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100" id="new-note" name="note" rows="4" maxlength="2000"></textarea>
 </section>
 <div class="my-6">
-        <label class="mb-4 flex items-start gap-2" data-clone-confirmation <%= $has_host ? 'hidden' : '' %>>
-            <input class="mt-1.5 size-4 shrink-0 accent-blue-700" type="checkbox" name="clone" value="yes" <%= $has_host ? 'disabled' : 'required' %>>
+        <label class="mb-4 flex items-start gap-2" data-clone-confirmation>
+            <input class="mt-1.5 size-4 shrink-0 accent-blue-700" type="checkbox" name="clone" value="yes">
             元のディスクから独立したクローンディスクであることを確認しました
         </label>
-        <button class="inline-flex min-h-10 items-center justify-center rounded-md border px-4 py-2 font-medium cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-blue-700 bg-blue-700 text-white enabled:hover:bg-blue-800" type="submit" <%= $unavailable ? 'disabled' : '' %>>スキャン開始</button>
+        <button class="inline-flex min-h-10 items-center justify-center rounded-md border px-4 py-2 font-medium cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-blue-700 bg-blue-700 text-white enabled:hover:bg-blue-800" type="submit" <%= $inventory->{stale} || @{$inventory->{blocked} // []} ? 'disabled' : '' %>>スキャン開始</button>
 </div>
-% } else {
-<p class="py-6 text-center text-slate-500">スキャンできる対象がありません。</p>
-% }
+<p class="my-4 text-sm" role="status" data-scan-status></p>
 </form>
