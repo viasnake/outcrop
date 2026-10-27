@@ -160,10 +160,10 @@ sub _exclusion_reasons {
     my @labels = (
         [qr/\A(?:Mounted filesystem|Scanner storage:|Active swap|Referenced)/, '使用中'],
         [qr/\ANo hardware serial/,                                             '識別情報を取得できません'],
-        [qr/\AUnsupported/,                                                    '未対応の構成'],
         [qr/\A(?:Ambiguous filesystem|Partition table present)/,               '構成を判別できません'],
         [qr/\AOnly ext4/,                                                      '対象外のファイルシステム'],
-        [qr/\ACannot resolve scanner storage:/,                                '使用状態を確認できません'],
+        [qr/\ABIOS boot partition:/,            'BIOS boot partition（起動用・スキャン対象外）'],
+        [qr/\ACannot resolve scanner storage:/, '使用状態を確認できません'],
     );
     my %seen;
     my @translated;
@@ -174,6 +174,12 @@ sub _exclusion_reasons {
             $label = $translation->[1];
             last;
         }
+
+        # Keep the device and detected layout visible instead of collapsing
+        # distinct unsupported partitions into a single generic label.
+        $label =~ s/\AUnsupported partition table/未対応のパーティションテーブル/;
+        $label =~ s/\AUnsupported or unknown partition/未対応または不明なパーティション/;
+        $label =~ s/\AUnsupported/未対応の構成/;
         push @translated, $label unless $seen{$label}++;
     }
     return \@translated;

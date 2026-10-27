@@ -46,6 +46,9 @@
                 % if (defined $disk->{size}) {
                 <span><%= sprintf('%.1f GiB', $disk->{size} / 1073741824) %></span>
                 % }
+                % if (length($disk->{pttype} // '')) {
+                <span>パーティションテーブル: <%= $disk->{pttype} %></span>
+                % }
                 <span class="ml-auto text-slate-600"><%= $is_system ? 'システム' : $selectable ? '選択可' : '選択不可' %></span>
             </div>
             % if ($disk->{serial} || $disk->{wwn}) {
@@ -80,7 +83,7 @@
                        required <%= $disabled ? 'disabled' : '' %>>
                 <span>
                     <strong><%= $target->{name} %></strong>
-                    <%= display($target->{fstype}) %>
+                    ファイルシステム: <%= length($target->{fstype} // '') ? $target->{fstype} : 'なし / 未検出' %>
                     · <%= sprintf('%.1f GiB', ($target->{size} // 0) / 1073741824) %>
                     <small class="block text-xs text-slate-500"><%= @mountpoints ? join(', ', @mountpoints) : '未マウント' %></small>
                     % if (@$target_reasons) {

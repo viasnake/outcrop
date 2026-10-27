@@ -9,7 +9,8 @@ use Fcntl       qw(O_RDONLY O_NONBLOCK);
 use Outcrop::Command;
 
 # Linux amd64: _IOR(0x12, 128, __u64), available since Linux 5.15.
-use constant BLKGETDISKSEQ => 0x80081280;
+use constant BLKGETDISKSEQ            => 0x80081280;
+use constant BIOS_BOOT_PARTITION_TYPE => '21686148-6449-6e6f-744e-656564454649';
 
 has 'config';
 has command    => sub { Outcrop::Command->new };
@@ -304,7 +305,7 @@ sub _disk_exclusion_reasons {
     }
 
     if (@$partitions) {
-        push @reasons, 'Unsupported partition table'
+        push @reasons, 'Unsupported partition table: ' . ($disk->{pttype} || '<empty>')
             unless ($disk->{pttype} // '') =~ /\A(?:gpt|dos)\z/;
         push @reasons, 'Ambiguous filesystem and partition table'
             if length($disk->{fstype} // '');
@@ -317,10 +318,16 @@ sub _disk_exclusion_reasons {
         my $filesystem = $partition->{fstype} // '';
         my $is_efi =
             lc($partition->{parttype} // '') =~ /\A(?:c12a7328-f81f-11d2-ba4b-00a0c93ec93b|0xef)\z/;
-        my $supported = $filesystem =~ /\A(?:ext4|xfs|swap)\z/
-            || ($is_efi && $filesystem eq 'vfat');
+        my $is_bios_boot_type = lc($partition->{parttype} // '') eq BIOS_BOOT_PARTITION_TYPE;
+        my $supported =
+              $is_bios_boot_type
+            ? $self->_is_bios_boot_partition($disk, $partition)
+            : $filesystem =~ /\A(?:ext4|xfs|swap)\z/ || ($is_efi && $filesystem eq 'vfat');
         unless ($partition->{type} eq 'part' && $supported) {
-            push @reasons, "Unsupported or unknown partition: $partition->{name} ($filesystem)";
+            my $details = join(', ',
+                'PTTYPE=' . ($disk->{pttype} || '<empty>'),
+                map { uc($_) . '=' . ($partition->{$_} || '<empty>') } qw(type parttype fstype));
+            push @reasons, "Unsupported or unknown partition: $partition->{name} ($details)";
         }
         if ($excluded->{$partition->{'maj:min'}}) {
             push @reasons, "Referenced partition: $partition->{name}";
@@ -329,12 +336,28 @@ sub _disk_exclusion_reasons {
     return \@reasons;
 }
 
+sub _is_bios_boot_partition {
+    my ($self, $disk, $partition) = @_;
+
+    # GRUB stores bootloader data here without a filesystem. Only this exact
+    # GPT layout may coexist with scan targets; host-use checks still apply.
+    return
+           ($disk->{pttype} // '') eq 'gpt'
+        && ($partition->{type} // '') eq 'part'
+        && lc($partition->{parttype} // '') eq BIOS_BOOT_PARTITION_TYPE
+        && !length($partition->{fstype} // '');
+}
+
 sub _build_target {
     my ($self, $disk, $filesystem, $disk_reasons, $boot_id) = @_;
 
     my @reasons = @$disk_reasons;
-    push @reasons, 'Only ext4 / XFS root filesystems are supported'
-        unless ($filesystem->{fstype} // '') =~ /\A(?:ext4|xfs)\z/;
+    if ($self->_is_bios_boot_partition($disk, $filesystem)) {
+        push @reasons, 'BIOS boot partition: bootloader only, not scanned';
+    }
+    elsif (($filesystem->{fstype} // '') !~ /\A(?:ext4|xfs)\z/) {
+        push @reasons, 'Only ext4 / XFS root filesystems are supported';
+    }
 
     # Serial/WWN identify the hardware; boot ID and disk sequence distinguish
     # attachments even when /dev names, partition UUIDs, and sizes are reused.

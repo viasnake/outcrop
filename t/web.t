@@ -10,6 +10,7 @@ use lib 'lib';
 use Outcrop;
 use Outcrop::Store;
 use Outcrop::Config;
+use Outcrop::Disk;
 use Minion;
 
 # Keep the real SQLite store and Minion queue, replacing only disk input and
@@ -284,5 +285,89 @@ $t->get_ok('/inventory')
     ->element_exists('input[value="' . $new_token . '"][disabled]');
 $running_job->finish;
 $running_worker->unregister;
+
+# Render real classification output so neither page loads nor polling hide
+# unsupported layout details or offer BIOS boot partitions for scanning.
+my %layout_nodes = (
+    '8:16' => {
+        name      => '/dev/clone',
+        type      => 'disk',
+        'maj:min' => '8:16',
+        pttype    => 'gpt',
+        serial    => 'clone',
+        diskseq   => 1,
+    },
+    '8:17' => {
+        name      => '/dev/clone1',
+        type      => 'part',
+        'maj:min' => '8:17',
+        fstype    => 'ext4',
+        start     => 2048,
+    },
+    '8:18' => {
+        name      => '/dev/clone2',
+        type      => 'part',
+        'maj:min' => '8:18',
+        parttype  => '21686148-6449-6e6f-744e-656564454649',
+        fstype    => '',
+        start     => 34,
+    },
+);
+my %layout_parents = ('8:17' => {'8:16' => 1}, '8:18' => {'8:16' => 1});
+my $classifier     = Outcrop::Disk->new;
+my $layout         = $classifier->classify(\%layout_nodes, \%layout_parents, {}, [], 'boot-test');
+$store->atomic_json("$root/inventory.json", $layout);
+my ($bios_target, $root_target) = @{$layout->{disks}[0]{targets}};
+for my $route ('/', '/inventory') {
+    $t->get_ok($route)
+        ->status_is(200)
+        ->element_exists('input[value="' . $bios_target->{token} . '"][disabled]')
+        ->element_exists('input[value="' . $root_target->{token} . '"]:not([disabled])')
+        ->content_like(qr/BIOS boot partition（起動用・スキャン対象外）/)
+        ->content_like(qr/ファイルシステム: なし \/ 未検出/)
+        ->content_unlike(qr/未対応/);
+}
+my %bios_form = (
+    csrf_token => $csrf,
+    scan_id    => Outcrop::random_id(),
+    target     => $bios_target->{token},
+    clone      => 'yes',
+);
+$t->post_ok('/scans' => form => \%bios_form)->status_is(409);
+is(job_count(), 3, 'A forged BIOS boot selection cannot enqueue a scan');
+
+$layout_nodes{'8:18'}{parttype} = '';
+$layout_nodes{'8:19'} = {
+    name      => '/dev/clone3' . $payload,
+    type      => 'part',
+    'maj:min' => '8:19',
+    parttype  => 'unknown',
+    fstype    => 'LVM2_member',
+    start     => 4096,
+};
+$layout_parents{'8:19'} = {'8:16' => 1};
+$layout = $classifier->classify(\%layout_nodes, \%layout_parents, {}, [], 'boot-test');
+$store->atomic_json("$root/inventory.json", $layout);
+
+for my $route ('/', '/inventory') {
+    $t->get_ok($route)
+        ->status_is(200)
+        ->content_like(qr/未対応または不明なパーティション: \/dev\/clone2/)
+        ->content_like(qr/未対応または不明なパーティション: \/dev\/clone3/)
+        ->content_like(qr/PTTYPE=gpt, TYPE=part, PARTTYPE=&lt;empty&gt;, FSTYPE=&lt;empty&gt;/)
+        ->content_like(qr/PARTTYPE=unknown, FSTYPE=LVM2_member/)
+        ->content_unlike(qr/<script>alert/)
+        ->element_exists_not('input[name="target"]:not([disabled])');
+    my $reason_text = $t->tx->res->dom->find('p')->map('all_text')->join(' ');
+    is(() = $reason_text =~ /未対応または不明なパーティション/g,
+        2, 'Each unsupported partition is explained once at disk level');
+}
+for my $table ('sun', '') {
+    $layout_nodes{'8:16'}{pttype} = $table;
+    $layout = $classifier->classify(\%layout_nodes, \%layout_parents, {}, [], 'boot-test');
+    $store->atomic_json("$root/inventory.json", $layout);
+    my $expected = $table || '&lt;empty&gt;';
+    $t->get_ok('/inventory')->status_is(200)->content_like(qr/未対応のパーティションテーブル: \Q$expected\E/);
+}
 
 done_testing;

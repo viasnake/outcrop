@@ -139,6 +139,120 @@ like(
 );
 ok($clone->{targets}[0]{selectable}, 'Independent ext4 clone can be selected');
 
+# A BIOS boot partition may coexist with data but must never become a scan
+# target or bypass disk-wide host-use and identity checks.
+{
+    local $nodes{'8:18'} = {
+        name      => '/dev/sdb2',
+        type      => 'part',
+        'maj:min' => '8:18',
+        parttype  => '21686148-6449-6e6f-744e-656564454649',
+        fstype    => '',
+        start     => 34,
+    };
+    local $parents{'8:18'} = {'8:16' => 1};
+    for my $filesystem ('ext4', 'xfs') {
+        local $nodes{'8:17'}{fstype} = $filesystem;
+        for my $empty ('', undef) {
+            local $nodes{'8:18'}{fstype} = $empty;
+            my $result = classify()->{disks}[1];
+            is_deeply($result->{reasons}, [], 'BIOS boot does not exclude its disk');
+            is_deeply([map { $_->{name} } grep { $_->{selectable} } @{$result->{targets}}],
+                ['/dev/sdb1'], "Only the $filesystem filesystem is selectable alongside BIOS boot");
+            like(
+                join(' ', @{$result->{targets}[0]{reasons}}),
+                qr/BIOS boot partition:.*not scanned/,
+                'BIOS boot exclusion explains its purpose'
+            );
+        }
+    }
+    {
+        local $nodes{'8:18'}{parttype} = uc $nodes{'8:18'}{parttype};
+        ok(classify()->{disks}[1]{targets}[1]{selectable}, 'BIOS boot GUID is case insensitive');
+    }
+    for my $invalid (
+        ['8:16', 'pttype',   'dos'],
+        ['8:16', 'pttype',   ''],
+        ['8:18', 'parttype', ''],
+        ['8:18', 'parttype', 'unknown'],
+        ['8:18', 'type',     'lvm'],
+        map { ['8:18', 'fstype', $_] } qw(ext4 xfs vfat swap crypto_LUKS)
+        )
+    {
+        my ($number, $field, $value) = @$invalid;
+        local $nodes{$number}{$field} = $value;
+        my $result = classify()->{disks}[1];
+        ok(!grep($_->{selectable}, @{$result->{targets}}),
+            "Invalid BIOS boot layout ($field=$value) excludes the entire disk");
+        like(
+            join(' ', @{$result->{reasons}}),
+            qr/Unsupported or unknown partition: \/dev\/sdb2 \(PTTYPE=.+, TYPE=.+, PARTTYPE=.+, FSTYPE=.+\)/,
+            'Unsupported layout reports the device and all classification fields'
+        );
+    }
+    for my $reason ('Mounted filesystem', 'Active swap', 'Referenced by device-mapper / RAID') {
+        my $result = classify({'8:18' => $reason})->{disks}[1];
+        ok(!grep($_->{selectable}, @{$result->{targets}}),
+            "BIOS boot partition with $reason still excludes the entire disk");
+    }
+    {
+        local $nodes{'8:16'}{serial} = '';
+        ok(
+            !classify()->{disks}[1]{targets}[1]{selectable},
+            'BIOS boot allowance does not bypass disk identity checks'
+        );
+    }
+    {
+        local $parents{'8:17'} = {};
+        ok(
+            !grep($_->{selectable}, @{classify()->{disks}[1]{targets}}),
+            'A disk containing only BIOS boot has no selectable targets'
+        );
+    }
+}
+
+# Match the NVMe layout with ext4, BIOS boot, and EFI system partitions.
+# Device numbers, offsets, and hardware identity are synthetic test metadata.
+{
+    my %nvme_nodes = (
+        '259:0' => {
+            name      => '/dev/nvme3n1',
+            type      => 'disk',
+            'maj:min' => '259:0',
+            pttype    => 'gpt',
+            serial    => 'fixture-nvme',
+            diskseq   => 1,
+        },
+    );
+    my %nvme_parents;
+    for my $partition (
+        [1,  'ext4', '0fc63daf-8483-4772-8e79-3d69d8477de4'],
+        [14, '',     '21686148-6449-6e6f-744e-656564454649'],
+        [15, 'vfat', 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'],
+        )
+    {
+        my ($index, $fstype, $parttype) = @$partition;
+        my $number = "259:$index";
+        $nvme_nodes{$number} = {
+            name      => "/dev/nvme3n1p$index",
+            type      => 'part',
+            'maj:min' => $number,
+            pttype    => 'gpt',
+            fstype    => $fstype,
+            parttype  => $parttype,
+            start     => $index * 2048,
+        };
+        $nvme_parents{$number} = {'259:0' => 1};
+    }
+    my $result = $disk->classify(\%nvme_nodes, \%nvme_parents, {}, [], 'boot-1')->{disks}[0];
+    is_deeply($result->{reasons}, [], 'NVMe ext4, BIOS boot, and EFI layout is supported');
+    is_deeply(
+        [map { [$_->{name}, $_->{selectable}] } @{$result->{targets}}],
+        [['/dev/nvme3n1p1', 1], ['/dev/nvme3n1p14', 0], ['/dev/nvme3n1p15', 0]],
+        'Only the NVMe ext4 partition is selectable; BIOS boot and EFI are not scanned'
+    );
+}
+
 # Reused names and UUIDs must not conceal reattachment or replacement.
 my $token = $clone->{targets}[0]{token};
 $nodes{'8:16'}{diskseq} = 3;
