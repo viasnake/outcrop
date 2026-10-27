@@ -8,8 +8,9 @@ requires 'Mojo::SQLite',            '3.009';
 requires 'DBI',                     '1.647';
 requires 'DBD::SQLite',             '1.78';
 
-# Mojo's native decoder keeps large host SBOMs practical to display.
+# Native JSON decoding for metadata; streaming validation for tool artifacts.
 requires 'Cpanel::JSON::XS', '4.20';
+requires 'JSON::SL',         '1.0.7';
 
 on 'test' => sub {
     requires 'Test::More', '1.302183';

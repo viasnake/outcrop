@@ -114,6 +114,94 @@ $t->get_ok("/scans/$id/download/secret")->status_is(404);
 $t->get_ok('/scans/invalid/download/metadata')->status_is(404);
 $t->get_ok("/scans/$id/download/..%2F..%2Fweb.secret")->status_is(404);
 
+my $results     = Outcrop::Results->new(config => $config);
+my $result_file = $results->location($id, 'grype');
+$t->get_ok("/scans/$id/results/grype")->status_is(409);
+ok(!-e $result_file, 'Reading an old result never creates its index');
+$t->post_ok("/scans/$id/results/grype/rebuild")->status_is(403);
+$t->get_ok("/scans/$id")->status_is(200);
+my $result_csrf =
+    $t->tx->res->dom->at('[data-result-build] input[name="csrf_token"]')->attr('value');
+$t->post_ok("/scans/$id/results/grype/rebuild" => form => {csrf_token => $result_csrf})
+    ->status_is(202);
+my $status_url = $t->tx->res->json->{status_url};
+
+sub finish_result_jobs {
+    my $deadline = time + 10;
+    while (keys %{$app->{result_jobs} // {}} && time < $deadline) {
+        Mojo::IOLoop->one_tick;
+    }
+    ok(!keys %{$app->{result_jobs} // {}}, 'Result build finishes');
+}
+finish_result_jobs();
+$t->get_ok($status_url)->status_is(200)->json_is('/state', 'ready');
+my $result_url = $t->tx->res->json->{url};
+$t->get_ok($result_url)
+    ->status_is(200)
+    ->json_is('/total',    1)
+    ->json_is('/rows/0/0', 'CVE-EXAMPLE-001')
+    ->json_is('/rows/0/1', $payload);
+$t->get_ok("$result_url&query=missing")->status_is(200)->json_is('/count', 0);
+$t->get_ok("$result_url&column=3&descending=1")->status_is(200);
+$t->get_ok("$result_url&column=0%3BDELETE")->status_is(400);
+$t->get_ok("$result_url&start=-1")->status_is(400);
+$t->get_ok("/scans/$id/results/grype?version=old")->status_is(409);
+$t->get_ok("/scans/$id/results/log")->status_is(404);
+$t->get_ok('/scans/invalid/results/grype')->status_is(404);
+
+# Rebuilding unchanged JSON must still invalidate cached pages.
+my $original_json = $dir->child('vulnerabilities.grype.json')->slurp;
+$t->post_ok("/scans/$id/results/grype/rebuild" => form => {csrf_token => $result_csrf})
+    ->status_is(202);
+$status_url = $t->tx->res->json->{status_url};
+finish_result_jobs();
+$t->get_ok($status_url)->status_is(200)->json_is('/state', 'ready');
+my $rebuilt_url = $t->tx->res->json->{url};
+isnt($rebuilt_url, $result_url, 'Rebuild invalidates cached pages even with unchanged input');
+$t->get_ok($result_url)->status_is(409);
+$t->get_ok($rebuilt_url)->status_is(200)->json_is('/total', 1);
+is($dir->child('vulnerabilities.grype.json')->slurp,
+    $original_json, 'Rebuild leaves raw JSON untouched');
+{
+    my $lock = $results->build_lock($result_file);
+    $t->post_ok("/scans/$id/results/grype/rebuild" => form => {csrf_token => $result_csrf})
+        ->status_is(409);
+}
+{
+    no warnings 'redefine';
+    local *Outcrop::Results::verify = sub { die 'Injected verification failure' };
+    $t->post_ok("/scans/$id/results/grype/rebuild" => form => {csrf_token => $result_csrf})
+        ->status_is(202);
+    $status_url = $t->tx->res->json->{status_url};
+    finish_result_jobs();
+}
+$t->get_ok($status_url)->status_is(200)->json_is('/state', 'failed');
+$t->get_ok($rebuilt_url)->status_is(200)->json_is('/total', 1);
+ok(!-e "$result_file.part", 'Failed rebuild cleans temporary index');
+{
+    no warnings 'redefine';
+    my $save_status = Outcrop::Results->can('save_build_status');
+    local *Outcrop::Results::save_build_status = sub {
+        die 'Injected status write failure' unless $_[2]{state} eq 'running';
+        return $save_status->(@_);
+    };
+    $t->post_ok("/scans/$id/results/grype/rebuild" => form => {csrf_token => $result_csrf})
+        ->status_is(202);
+    $status_url = $t->tx->res->json->{status_url};
+    finish_result_jobs();
+}
+$t->get_ok($status_url)->status_is(200)->json_is('/state', 'failed');
+{
+    my $lock = $results->build_lock($result_file);
+    ok($lock, 'Status write failure cannot leave rebuilds locked');
+}
+$scan->{status} = 'running';
+$store->save($scan);
+$t->post_ok("/scans/$id/results/grype/rebuild" => form => {csrf_token => $result_csrf})
+    ->status_is(409);
+$scan->{status} = 'completed';
+$store->save($scan);
+
 sub job_count {
     return $queue->backend->sqlite->db->query('SELECT count(*) AS count FROM minion_jobs')
         ->hash->{count};

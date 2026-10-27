@@ -1,0 +1,56 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use lib 'lib';
+use Mojo::File  qw(path);
+use Mojo::JSON  qw(encode_json);
+use Time::HiRes qw(time);
+use Outcrop::Config;
+use Outcrop::Results;
+
+# Run through carton exec from the repository root. The synthetic source and
+# derived index stay under ignored var/; no disks or real scan data are used.
+my $count = $ARGV[0] // 131072;
+die "Usage: benchmark-results [row-count]\n" unless $count =~ /\A[1-9][0-9]*\z/;
+my $directory = path('var/results-benchmark')->make_path;
+my $source    = $directory->child('vulnerabilities.grype.json');
+open my $out, '>:raw', $source or die $!;
+print {$out} '{"matches":[';
+for my $number (1 .. $count) {
+    print {$out} ',' if $number > 1;
+    print {$out} encode_json(
+        {
+            artifact      => {name => "package-$number", version => '1.2.3'},
+            vulnerability => {
+                id          => "CVE-$number",
+                severity    => 'High',
+                fix         => {versions => ['2.0.0']},
+                description => ('x' x 8192)
+            }
+        }
+    );
+}
+print {$out} '],"descriptor":{"name":"grype"}}';
+close $out or die $!;
+my $results  = Outcrop::Results->new(config => Outcrop::Config->new(state => "$directory"));
+my $file     = $results->location('a' x 32, 'grype');
+my $revision = $results->revision($source);
+my $started  = time;
+$results->build($source, $file, 'grype', $revision);
+printf "source_bytes=%d index_bytes=%d rows=%d build_seconds=%.3f\n", -s $source, -s $file, $count,
+    time - $started;
+
+for my $request ({}, {query => 'package-999'}, {column => 0, descending => 1},
+    {start => $count - 30})
+{
+    my @times;
+    my $page;
+    for (1 .. 5) {
+        $started = time;
+        $page    = $results->page($file, $revision, $request);
+        push @times, time - $started;
+    }
+    @times = sort { $a <=> $b } @times;
+    printf "request=%s bytes=%d matches=%d median_ms=%.2f max_ms=%.2f\n", encode_json($request),
+        length(encode_json($page)), $page->{count}, $times[2] * 1000, $times[-1] * 1000;
+}

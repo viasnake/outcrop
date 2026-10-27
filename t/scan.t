@@ -210,6 +210,34 @@ for my $failure (qw(identity readonly options mount syft)) {
     );
 }
 
+# Completed scans publish private indexes before exposing completion.
+{
+    my ($scan, $store) = scan_case('');
+    my $results = Outcrop::Results->new(config => $store->config);
+    for my $kind (qw(syft grype)) {
+        my $file = $results->published_location($scan->{id}, $kind);
+        ok($results->ready($file, $results->revision($store->artifact($scan->{id}, $kind))),
+            "$kind index ready on scan completion");
+        ok(!-e $results->location($scan->{id}, $kind), 'Scanner does not write Web rebuild files');
+    }
+}
+{
+    no warnings 'redefine';
+    my $build = Outcrop::Results->can('build');
+    local *Outcrop::Results::build = sub {
+        die 'Injected index failure' if $_[3] eq 'grype';
+        return $build->(@_);
+    };
+    my ($scan, $store) = scan_case('');
+    is($scan->{status}, 'completed', 'Index failure preserves successful audit status');
+    ok($store->artifact($scan->{id}, 'grype'), 'Raw audit survives index failure');
+    like(
+        $scan->{result_index_errors}{grype},
+        qr/Injected index failure/,
+        'Index failure is recorded for recovery'
+    );
+}
+
 # Missing filesystems and scope metadata preserve results and their warnings.
 for my $scope ('separate-filesystems', 'missing-scope') {
     my ($scan, $store, $events) = scan_case($scope);

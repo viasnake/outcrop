@@ -3,6 +3,7 @@
 /var/
 /scans/
 /local/
+/node_modules/
 /.carton/
 /.tools/
 /.cache/

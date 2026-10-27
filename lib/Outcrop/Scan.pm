@@ -7,6 +7,7 @@ use Fcntl qw(:flock F_SETFD);
 use Outcrop::Command;
 use Outcrop::Store;
 use Outcrop::Tags;
+use Outcrop::Results;
 
 has [qw(config store disk)];
 has cache_slot => 1;
@@ -177,7 +178,8 @@ sub exclusions {
 sub valid_artifact {
     my ($self, $file, $kind) = @_;
 
-    my $data = $self->store->read_json($file);
+    require Outcrop::ResultStream;
+    my $data = Outcrop::ResultStream->read($file, $kind);
     die "Invalid $kind JSON" unless ref $data eq 'HASH';
 
     # Validate the envelope before publishing or using an output as another
@@ -205,6 +207,7 @@ sub valid_artifact {
 sub publish {
     my ($self, $temporary, $final, $kind) = @_;
     my $data = $self->valid_artifact($temporary, $kind);
+    $self->_verify_grype_database($data->{descriptor}{db}) if $kind eq 'grype';
     chmod 0640, $temporary or die "chmod artifact: $!";
     rename $temporary, $final or die "publish artifact: $!";
     return $data;
@@ -304,6 +307,7 @@ sub run {
         die 'Unmount failed; vulnerability matching was not started'
             unless $host_scan || $self->cleanup($scan, $target, $mountpoint);
         $self->_match_vulnerabilities($scan, $tool_config, $command_options);
+        $self->_index_results($scan, sub { $interrupted });
         $scan->{status} = 'completed';
         1;
     };
@@ -325,6 +329,31 @@ sub run {
     $scan->{phase}       = 'finished';
     $self->store->save($scan);
     return $scan;
+}
+
+sub _index_results {
+    my ($self, $scan, $cancelled) = @_;
+    $self->phase($scan, 'results');
+    my $results = Outcrop::Results->new(config => $self->config);
+    for my $kind (qw(syft grype)) {
+        my $source = $self->store->artifact($scan->{id}, $kind);
+        next unless $source;
+        my $ok = eval {
+            my $file = $results->published_location($scan->{id}, $kind);
+            $results->build($source, $file, $kind, $results->revision($source))
+                or die 'Result index is already being built';
+            1;
+        };
+        unless ($ok) {
+            my $error = $@;
+            die "Scan interrupted by stop request\n" if $cancelled->();
+
+            # Matching succeeded independently of the derived display data.
+            # Preserve the original artifacts and allow a later Web rebuild.
+            $scan->{result_index_errors}{$kind} = "$error";
+            push @{$scan->{warnings}}, "Could not prepare $kind result list: $error";
+        }
+    }
 }
 
 sub _acquire_lock {
@@ -449,7 +478,8 @@ sub _generate_sboms {
     my @validation_errors;
     for my $output (@outputs) {
         my $valid = eval {
-            $self->publish(@$output);
+            my $data = $self->publish(@$output);
+            $scan->{syft_version} = $data->{descriptor}{version} if $output->[2] eq 'syft';
             1;
         };
         push @validation_errors, $@ unless $valid;
@@ -461,8 +491,6 @@ sub _generate_sboms {
     $scan->{sbom_sha256} = Digest::SHA->new(256)->addfile($handle)->hexdigest;
     close $handle or die "Close SBOM: $!";
 
-    my $syft = $self->store->read_json($saved_sbom);
-    $scan->{syft_version} = $syft->{descriptor}{version};
 }
 
 sub _match_vulnerabilities {
@@ -480,13 +508,11 @@ sub _match_vulnerabilities {
         stdout => "$output"
     );
 
-    my $grype    = $self->valid_artifact($output, 'grype');
+    my $grype = $self->publish($output, $directory->child('vulnerabilities.grype.json'), 'grype');
     my $database = $grype->{descriptor}{db};
-    $self->_verify_grype_database($database);
 
     $scan->{grype_version} = $grype->{descriptor}{version};
     $scan->{grype_db}      = $database;
-    $self->publish($output, $directory->child('vulnerabilities.grype.json'), 'grype');
 }
 
 sub _verify_grype_database {

@@ -6,11 +6,13 @@ use Fcntl qw(:flock SEEK_END);
 use Minion;
 use Mojo::File qw(path);
 use Mojo::JSON qw(from_json);
+use Mojo::IOLoop::Subprocess;
 use Mojo::Util qw(decode);
 
 use Outcrop::Config;
 use Outcrop::Scan;
 use Outcrop::Store;
+use Outcrop::Results;
 
 has settings => sub { Outcrop::Config->new };
 has store    => sub { Outcrop::Store->new(config => shift->settings) };
@@ -41,6 +43,10 @@ sub startup {
     $routes->post('/scans/:id/tags')->to(cb => sub { $self->_update_tags(@_) });
     $routes->post('/scans/:id/note')->to(cb => sub { $self->_update_note(@_) });
     $routes->get('/scans/:id/download/:kind')->to(cb => sub { $self->_download_artifact(@_) });
+    $routes->get('/scans/:id/results/:kind')->to(cb => sub { $self->_result_page(@_) });
+    $routes->post('/scans/:id/results/:kind/rebuild')->to(cb => sub { $self->_rebuild_result(@_) });
+    $routes->get('/scans/:id/results/:kind/build')
+        ->to(cb => sub { $self->_result_build_status(@_) });
 }
 
 sub random_id {
@@ -136,6 +142,7 @@ sub _register_display_helpers {
         sbom            => 'SBOM 生成',
         unmounting      => 'アンマウント',
         vulnerabilities => '脆弱性照合',
+        results         => '一覧データ作成',
         finished        => '処理終了',
     );
     $self->helper(
@@ -363,22 +370,154 @@ sub _show_scan {
     return $controller->reply->not_found unless $scan;
 
     my $artifacts = $self->_artifacts($scan->{id});
-    my %versions;
+    my (%versions, %result_states);
+    my $results = Outcrop::Results->new(config => $self->settings);
     for my $kind (qw(syft grype)) {
         next unless $artifacts->{$kind};
-
-        # Published artifacts are replaced by atomic rename. File identity
-        # changes the browser cache key without reading large JSON bodies.
-        my @stat = stat $artifacts->{$kind};
-        $versions{$kind} = join('-', @stat[1, 7, 9, 10]);
+        my $revision = $results->revision($artifacts->{$kind});
+        my $file     = $results->available($scan->{id}, $kind, $revision);
+        $versions{$kind}      = $results->version($file, $revision) if $file;
+        $result_states{$kind} = $results->build_status($results->location($scan->{id}, $kind));
     }
     $controller->stash(
-        scan      => $scan,
-        artifacts => $artifacts,
-        versions  => \%versions,
-        log       => $self->_read_log_tail($artifacts->{log}),
+        scan          => $scan,
+        artifacts     => $artifacts,
+        versions      => \%versions,
+        result_states => \%result_states,
+        log           => $self->_read_log_tail($artifacts->{log}),
     );
     $controller->render(template => 'scan');
+}
+
+sub _result_page {
+    my ($self, $controller) = @_;
+    my ($id,   $kind)       = map { $controller->param($_) // '' } qw(id kind);
+    return $controller->reply->not_found unless $kind eq 'syft' || $kind eq 'grype';
+    my $source = $self->store->artifact($id, $kind);
+    return $controller->reply->not_found unless $source;
+    my $results  = Outcrop::Results->new(config => $self->settings);
+    my $revision = $results->revision($source);
+    my $file     = $results->available($id, $kind, $revision);
+    return $controller->render(status => 409, json => {error => '一覧データを作成してください。'}) unless $file;
+    my $version = $results->version($file, $revision);
+    return $controller->render(status => 409, json => {error => '結果が更新されました。画面を更新してください。'})
+        unless ($controller->param('version') // '') eq $version;
+    my $request = {
+        version    => $version,
+        query      => $controller->param('query') // '',
+        start      => $controller->param('start') // '0',
+        column     => $controller->param('column'),
+        descending => ($controller->param('descending') // '') eq '1',
+    };
+    return $controller->render(status => 400, json => {error => '検索条件を確認してください。'})
+        if length($request->{query}) > 500
+        || $request->{start} !~ /\A[0-9]{1,9}\z/
+        || (defined($request->{column}) && $request->{column} !~ /\A[0-4]\z/);
+
+    my $key = "$id-$kind-$revision";
+
+    # Searches and sorting run outside the HTTP event loop, including on old
+    # scans. The browser never falls back to decoding the original artifact.
+    if (($self->{result_queries} // 0) >= 2) {
+        $controller->res->headers->header('Retry-After' => 1);
+        return $controller->render(status => 429, json => {pending => 1});
+    }
+    $self->{result_queries}++;
+    $controller->render_later;
+    Mojo::IOLoop::Subprocess->new->run(
+        sub { $results->page($file, $revision, $request) },
+        sub {
+            my ($process, $error, $page) = @_;
+            $self->{result_queries}--;
+            if ($error) {
+                $self->log->error("Result query $key: $error");
+                $controller->render(status => 500, json => {error => '結果を読み込めませんでした。画面を更新してください。'});
+            }
+            else {
+                $controller->render(json => $page);
+            }
+        }
+    );
+}
+
+sub _rebuild_result {
+    my ($self, $controller) = @_;
+    return $controller->render(status => 403, json => {error => 'Invalid CSRF token'})
+        if $controller->validation->csrf_protect->has_error('csrf_token');
+    my ($id, $kind) = map { $controller->param($_) // '' } qw(id kind);
+    return $controller->reply->not_found unless $kind eq 'syft' || $kind eq 'grype';
+    my $scan = $self->store->get($id);
+    return $controller->reply->not_found unless $scan;
+    return $controller->render(status => 409, json => {error => 'スキャンの完了後に実行してください。'})
+        if $scan->{status} eq 'running' || $scan->{status} eq 'queued';
+    my $source = $self->store->artifact($id, $kind);
+    return $controller->reply->not_found unless $source;
+    my $results = Outcrop::Results->new(config => $self->settings);
+    my $file    = $results->location($id, $kind);
+    my $lock    = $results->build_lock($file);
+    return $controller->render(status => 409, json => {error => 'ほかの一覧を作成中です。完了後に再実行してください。'})
+        unless $lock;
+    my $revision = $results->revision($source);
+    my $status   = {state => 'running', token => random_id()};
+    $results->save_build_status($file, $status);
+    my $process = Mojo::IOLoop::Subprocess->new;
+    my $key     = "$id-$kind";
+    $self->{result_jobs}{$key} = $process;
+    $process->run(
+        sub {
+            my $ok = eval {
+                $results->build($source, $file, $kind, $revision, force => 1, lock => $lock);
+            };
+            my $error = $@;
+            $results->save_build_status($file, {%$status, state => $ok ? 'ready' : 'failed'});
+            return $error;
+        },
+        sub {
+            my ($process, $error, $build_error) = @_;
+            if ($error || $build_error) {
+                $self->log->error("Result rebuild $key: " . ($error || $build_error));
+
+                # Status writes can fail for the same reason as the build
+                # (for example a full disk). Always release the build lock.
+                eval { $results->save_build_status($file, {%$status, state => 'failed'}); };
+                $self->log->error("Result rebuild status $key: $@") if $@;
+            }
+            close $lock;
+            delete $self->{result_jobs}{$key};
+        }
+    );
+    return $controller->render(
+        status => 202,
+        json   => {
+            status_url => "/scans/$id/results/$kind/build?token=$status->{token}",
+        }
+    );
+}
+
+sub _result_build_status {
+    my ($self, $controller) = @_;
+    my ($id,   $kind)       = map { $controller->param($_) // '' } qw(id kind);
+    return $controller->reply->not_found unless $kind eq 'syft' || $kind eq 'grype';
+    return $controller->reply->not_found unless $self->store->artifact($id, $kind);
+    my $results = Outcrop::Results->new(config => $self->settings);
+    my $status  = $results->build_status($results->location($id, $kind));
+    return $controller->render(status => 409, json => {error => '画面を更新して状態を確認してください。'})
+        unless ($controller->param('token') // '') eq ($status->{token} // '');
+    my $response = {state => $status->{state}};
+
+    if ($status->{state} eq 'ready') {
+        my $source   = $self->store->artifact($id, $kind);
+        my $revision = $results->revision($source);
+        my $file     = $results->available($id, $kind, $revision);
+        if ($file) {
+            $response->{url} =
+                "/scans/$id/results/$kind?version=" . $results->version($file, $revision);
+        }
+        else {
+            $response->{state} = 'failed';
+        }
+    }
+    return $controller->render(json => $response);
 }
 
 sub _artifacts {
