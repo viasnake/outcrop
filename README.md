@@ -77,8 +77,6 @@ mise run test
 mise run format:check
 ```
 
-CI では Ubuntu 22.04 / 24.04 の標準 Perl でテストし、一時的なループデバイスでディスク情報の取得も確認します。
-
 ## LICENSE
 
 [Apache-2.0](LICENSE)
