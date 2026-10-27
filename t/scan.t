@@ -47,7 +47,8 @@ use Outcrop::Scan;
         $self->mounted("$root");
         die 'mount command failed after mounting' if ($self->failure // '') eq 'mount';
         Mojo::File::path($root, $_)->make_path for qw(etc usr var);
-        Mojo::File::path($root, 'etc/os-release')->spurt("ID=ubuntu\n");
+        Mojo::File::path($root, 'etc/os-release')->spurt("ID=ubuntu\n")
+            unless ($self->failure // '') eq 'no-release';
         Mojo::File::path($root, 'etc/fstab')->spurt("UUID=root / ext4 defaults 0 1\n");
         push @{$self->events}, 'mount';
     }
@@ -181,6 +182,23 @@ for my $failure (qw(identity readonly options mount syft)) {
     }
 }
 
+# Missing distribution metadata must not prevent cataloging or matching.
+{
+    my ($scan, $store, $events) = scan_case('no-release');
+    is($scan->{status}, 'completed', 'Scan completes without any OS release file');
+    is_deeply(
+        $events,
+        [qw(mount syft unmount grype)],
+        'Missing release files do not skip tools or cleanup'
+    );
+    ok(
+        $store->artifact($scan->{id}, 'syft')
+            && $store->artifact($scan->{id}, 'cdx')
+            && $store->artifact($scan->{id}, 'grype'),
+        'All artifacts published without distribution metadata'
+    );
+}
+
 # A failed matcher retains both SBOM formats and never publishes a zero-match result.
 {
     my ($scan, $store, $events) = scan_case('grype');
@@ -233,6 +251,20 @@ for my $failure (qw(identity readonly options mount syft)) {
         'Recorded digest identifies the actual saved SBOM'
     );
     ok($scan->{grype_db}{status}{built}, 'Actual DB metadata is retained');
+}
+
+# Both scan types persist exactly the patterns actually sent to Syft.
+for my $kind ('clone', 'host') {
+    my ($scan, $store, $events, $directory, $tools) = scan_case('', $kind);
+    my @sent;
+    my $args = $tools->arguments;
+    for my $index (0 .. $#$args - 1) {
+        push @sent, $args->[$index + 1] if $args->[$index] eq '--exclude';
+    }
+    is_deeply(\@sent, $scan->{exclusions}, "$kind persists its actual exclusions");
+    for my $pattern ('./var/log', './var/crash', './var/lib/systemd/coredump') {
+        ok(grep($_ eq $pattern, @sent), "$kind excludes $pattern");
+    }
 }
 
 # Guest absolute symlinks resolve inside the guest; separate /var is refused.

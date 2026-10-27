@@ -305,6 +305,10 @@ my $exclusions = $live_disk->host_exclusions;
 ok(grep($_ eq './var/lib/outcrop', @$exclusions), 'Live scan excludes its own generated results');
 ok(grep($_ eq './mnt/other',       @$exclusions), 'Live scan excludes other mounts');
 ok(!grep($_ eq '.' || $_ eq './',  @$exclusions), 'Live scan never excludes its root');
+
+for my $keep ('./tmp', '**/.cache', '**/.git', '**/.rustup/tmp') {
+    ok(!grep($_ eq $keep, @$exclusions), "$keep is not discarded by live scan policy");
+}
 $live_disk->root_number('253:1');
 isnt($live_disk->host_target->{token},
     $live->{token}, 'Changing the mounted root invalidates host selection');

@@ -112,9 +112,10 @@ sub host_exclusions {
     my ($self) = @_;
 
     # Limit live scans to the root filesystem and avoid scanning our own
-    # growing output, virtual filesystems, temporary files, and tool caches.
+    # growing output and virtual filesystems. Software in temporary or cache
+    # directories is still evidence and must remain searchable.
     my %paths = map { $_ => 1 } (
-        '/dev', '/proc', '/sys', '/run', '/tmp', $self->config->state,
+        '/dev', '/proc', '/sys', '/run', $self->config->state,
         $self->config->runtime,
         map { $_->{target} } @{$self->mount_table},
     );
@@ -124,7 +125,7 @@ sub host_exclusions {
         $directory =~ s/([\\*?\[\]{}])/\\$1/g;
         push @patterns, ".$directory";
     }
-    return [@patterns, '**/.git', '**/.cache', '**/.rustup/tmp'];
+    return \@patterns;
 }
 
 sub _read_block_devices {

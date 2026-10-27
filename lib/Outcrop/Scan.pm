@@ -92,9 +92,9 @@ sub inspect_root {
         die "Not a supported Linux root: missing /$directory"
             unless -d $self->guest_path($root, $directory);
     }
-    my $release = $self->guest_path($root, 'etc/os-release');
-    die 'Cannot identify Linux root (missing os-release)' unless -f $release && -s $release < 65536;
-    die 'Cannot identify Linux distribution'              unless $release->slurp =~ /^ID=.+/m;
+
+    # Distribution metadata is optional; let Syft identify it when available.
+    my $excluded = $self->exclusions($root);
 
     # fstab is evidence about scan scope, never a source of mount commands.
     # Refuse application/data mounts that this single-root scan cannot include.
@@ -111,6 +111,14 @@ sub inspect_root {
         $mountpoint =~ s/\\([0-7]{3})/chr(oct($1))/ge;
         next if $mountpoint eq '/' || $mountpoint eq '/boot' || $mountpoint eq '/boot/efi';
         next if $filesystem eq 'swap';
+
+        # A separate log/crash filesystem is deliberately outside our scope.
+        # Resolve components before comparison so /var/log/../lib stays required.
+        my $resolved = '' . $self->guest_path($root, $mountpoint);
+        next if grep {
+            my $directory = '' . path($root, substr($_, 2));
+            $resolved eq $directory || index($resolved, "$directory/") == 0
+        } @$excluded;
         next if $filesystem =~ /\A(?:
             proc | sysfs | devtmpfs | devpts | tmpfs | cgroup2? | debugfs |
             securityfs | pstore | mqueue | hugetlbfs
@@ -121,6 +129,32 @@ sub inspect_root {
         'Only the selected root filesystem was inspected; separate /boot and EFI areas are excluded.',
         'Detected files do not establish running software, completeness, or freedom from vulnerabilities.',
     ];
+}
+
+sub exclusions {
+    my ($self, $root) = @_;
+
+    # These root-relative locations contain logs or crash dumps, not package
+    # inventories. Caches, temporary directories, and application data remain
+    # searchable: they can contain installed or unpacked software.
+    my @patterns;
+    for my $relative ('var/log', 'var/crash', 'var/lib/systemd/coredump') {
+        my $directory = path($root);
+        my $has_symlink;
+        for my $component (split m{/}, $relative) {
+            $directory = $directory->child($component);
+            if (-l $directory) {
+                $has_symlink = 1;
+                last;
+            }
+        }
+
+        # A redirected log directory may point into an application tree.
+        # Preserve it instead of guessing which paths Syft will traverse.
+        next if $has_symlink;
+        push @patterns, "./$relative";
+    }
+    return \@patterns;
 }
 
 sub valid_artifact {
@@ -226,7 +260,6 @@ sub run {
             # The running root is read in place. Never change its block-device
             # flags, remount it, or pass it through guest cleanup handling.
             $scan_root = path('/');
-            $scan->{exclusions} = $self->disk->host_exclusions;
             push @{$scan->{warnings}},
                 'Live filesystem: files may change during scanning; this is not a snapshot.';
         }
@@ -234,6 +267,9 @@ sub run {
             $target = $self->disk->make_readonly($target);
             $self->_mount_and_inspect_root($scan, $target, $mountpoint);
         }
+        my %excluded = map { $_ => 1 } @{$self->exclusions($scan_root)};
+        $excluded{$_} = 1 for $host_scan ? @{$self->disk->host_exclusions} : ();
+        $scan->{exclusions} = [sort keys %excluded];
         my ($tool_config, $command_options) = $self->_prepare_tools($scan);
         $self->_generate_sboms($scan, $target, $scan_root, $tool_config, $command_options);
 
