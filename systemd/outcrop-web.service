@@ -1,0 +1,31 @@
+[Unit]
+Description=Outcrop loopback web interface
+After=network.target outcrop-worker.service
+Wants=outcrop-worker.service
+
+[Service]
+Type=forking
+User=outcrop
+Group=outcrop
+WorkingDirectory=/opt/outcrop
+RuntimeDirectory=outcrop-web
+RuntimeDirectoryMode=0750
+PIDFile=/run/outcrop-web/hypnotoad.pid
+ExecStart=/usr/bin/carton exec hypnotoad script/outcrop-web
+ExecReload=/usr/bin/carton exec hypnotoad script/outcrop-web
+KillSignal=SIGQUIT
+KillMode=mixed
+TimeoutStopSec=150
+Restart=on-failure
+RestartSec=5
+UMask=0007
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/outcrop/queue /var/lib/outcrop/annotations
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

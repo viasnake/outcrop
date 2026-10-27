@@ -1,0 +1,160 @@
+% layout 'default';
+% my $heading = 'スキャン ' . substr($scan->{id}, 0, 8);
+% title $heading . ' — Outcrop';
+% my $db = ref($scan->{grype_db}{status}) eq 'HASH' ? $scan->{grype_db}{status} : ($scan->{grype_db} // {});
+<h1 class="mb-6 text-2xl font-semibold tracking-tight wrap-anywhere sm:text-3xl"><%= $heading %></h1>
+
+<section class="grid divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white sm:grid-cols-3 sm:divide-x sm:divide-y-0 [&>div]:px-4 [&>div]:py-4 sm:[&>div]:px-6 [&_strong]:text-lg [&_strong]:wrap-anywhere [&_span]:mb-2 [&_span]:block [&_span]:text-xs [&_span]:text-slate-500" aria-label="実行状態">
+    <div>
+        <span>ステータス</span>
+        <strong class="data-[status=completed]:text-emerald-700 data-[status=partial]:text-amber-700 data-[status=interrupted]:text-amber-700 data-[status=failed]:text-red-700" data-status="<%= $scan->{status} %>"><%= label($scan->{status}) %></strong>
+    </div>
+    <div>
+        <span>フェーズ</span>
+        <strong><%= label($scan->{phase}) %></strong>
+    </div>
+    <div>
+        <span>マウント状態</span>
+        <strong><%= label($scan->{cleanup_status}) %></strong>
+    </div>
+</section>
+
+% if ($scan->{cleanup_status} eq 'needs_cleanup' || $scan->{cleanup_status} eq 'mounted') {
+<aside class="my-5 rounded-md border border-red-200 bg-red-50 p-4 text-red-900 wrap-anywhere">
+    <strong>ディスクを取り外さないでください。</strong>
+    <code class="font-mono text-xs wrap-anywhere">/run/outcrop/mounts/<%= $scan->{id} %>/</code> のアンマウントが必要です。
+</aside>
+% }
+% if ($scan->{error}) {
+<aside class="my-5 rounded-md border border-red-200 bg-red-50 p-4 text-red-900 wrap-anywhere">
+    <strong><%= label($scan->{failed_phase}) %>に失敗しました。</strong>
+    <details>
+        <summary class="cursor-pointer font-semibold group-open:mb-5">エラーの詳細</summary>
+        <pre class="mt-3 font-mono text-xs whitespace-pre-wrap wrap-anywhere"><%= $scan->{error} %></pre>
+    </details>
+</aside>
+% }
+% my @warnings = @{$scan->{warnings} // []};
+% if (@warnings) {
+<details class="my-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-amber-900 wrap-anywhere">
+    <summary class="cursor-pointer font-semibold group-open:mb-5">警告（<%= scalar @warnings %> 件）</summary>
+    <ul class="mt-3 list-disc space-y-1 pl-5">
+    % for my $warning (@warnings) {
+        <li><%= $warning %></li>
+    % }
+    </ul>
+</details>
+% }
+
+<div data-results>
+% for my $kind (qw(packages matches)) {
+% my $packages = $kind eq 'packages';
+% my $artifact = $packages ? 'syft' : 'grype';
+% my @columns = $packages ? ('名前', 'バージョン', '種類', 'Cataloger', '検出パス') : ('脆弱性 ID', '該当パッケージ', 'バージョン', 'Severity', '修正バージョン');
+<section class="my-6 min-w-0 rounded-lg border border-slate-200 bg-white p-4 sm:p-6" data-result-table="<%= $kind %>" data-source="<%= $artifacts->{$artifact} ? '/scans/' . $scan->{id} . '/download/' . $artifact . '?version=' . $versions->{$artifact} : '' %>">
+    <div class="flex flex-wrap items-center justify-between gap-4 [&>h2]:mb-0">
+        <h2 class="mb-5 text-lg font-semibold"><%= $packages ? 'パッケージ' : '脆弱性' %></h2>
+        <span class="text-xs text-slate-500" data-result-count></span>
+    </div>
+    <label class="my-4 block">
+        <span class="sr-only"><%= $packages ? 'パッケージを検索' : '脆弱性を検索' %></span>
+        <input class="mt-1 block w-full min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100" type="search" placeholder="検索" data-result-search disabled>
+    </label>
+    <p class="mt-4 text-slate-600" role="status" data-result-status><%= $artifacts->{$artifact} ? '読み込み中…' : ($packages ? 'SBOM はまだありません。' : '未評価') %></p>
+    <div data-result-viewport class="h-[572px] overflow-auto rounded-md border border-slate-200 [overflow-anchor:none]" tabindex="0" aria-label="<%= $packages ? 'パッケージ一覧' : '脆弱性一覧' %>" hidden>
+        <table class="w-full min-w-[960px] table-fixed border-collapse text-left text-xs">
+            <thead class="sticky top-0 z-10"><tr>
+                % for my $index (0 .. $#columns) {
+                <th class="h-11 truncate border-b border-slate-200 bg-slate-50 px-3 text-slate-600 last:w-[30%] aria-[sort=ascending]:text-blue-700 aria-[sort=descending]:text-blue-700" scope="col" aria-sort="none"><button class="w-full cursor-pointer text-left font-semibold disabled:cursor-not-allowed" type="button" data-sort="<%= $index %>" disabled><%= $columns[$index] %><span aria-hidden="true" data-sort-indicator> ↕</span></button></th>
+                % }
+            </tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+</section>
+% }
+</div>
+<noscript><p class="my-5 rounded-md border border-slate-200 bg-slate-100 p-4 wrap-anywhere">一覧の操作には JavaScript が必要です。JSON は下のリンクからダウンロードできます。</p></noscript>
+
+<section class="my-6 min-w-0 rounded-lg border border-slate-200 bg-white p-4 sm:p-6" data-tag-editor data-action="/scans/<%= $scan->{id} %>/tags">
+    <h2 class="mb-5 text-lg font-semibold">タグ</h2>
+    <div class="flex flex-wrap gap-1.5 not-empty:mb-4" data-scan-tags>
+        % for my $tag (@{$scan->{tags} // []}) {
+        <span class="inline-flex max-w-full items-center rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-xs text-slate-700 wrap-anywhere gap-1.5 pr-1">
+            <a class="min-w-0 wrap-anywhere hover:underline" href="<%= url_for('/history')->query(tag => $tag) %>"><%= $tag %></a>
+            <form class="flex shrink-0" method="post" action="/scans/<%= $scan->{id} %>/tags" data-tag-operation>
+                %= csrf_field
+                <input type="hidden" name="operation" value="remove">
+                <input type="hidden" name="tag" value="<%= $tag %>">
+                <button class="size-7 shrink-0 cursor-pointer rounded-full text-lg leading-none text-slate-500 hover:bg-slate-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50" type="submit" aria-label="<%= $tag %> を削除">×</button>
+            </form>
+        </span>
+        % }
+    </div>
+    <form class="flex flex-wrap items-end gap-3 [&>label]:min-w-0 [&>label]:grow" method="post" action="/scans/<%= $scan->{id} %>/tags" data-tag-operation>
+        %= csrf_field
+        <input type="hidden" name="operation" value="add">
+        <label class="text-sm"><span class="sr-only">タグ</span>
+            <input class="mt-1 block w-full min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100" name="tag" maxlength="120" placeholder="タグを入力" required>
+        </label>
+        <button class="inline-flex min-h-10 items-center justify-center rounded-md border px-4 py-2 font-medium cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-slate-300 bg-white text-slate-700 enabled:hover:bg-slate-100" type="submit">追加</button>
+    </form>
+    <span class="mt-2 block text-xs text-slate-600" role="status" data-tag-status></span>
+</section>
+
+<section class="my-6 min-w-0 rounded-lg border border-slate-200 bg-white p-4 sm:p-6">
+    <h2 class="mb-5 text-lg font-semibold">メモ</h2>
+    <form method="post" action="/scans/<%= $scan->{id} %>/note" data-note-editor>
+        %= csrf_field
+        <label class="sr-only" for="scan-note">スキャンのメモ</label>
+        <textarea class="mt-1 block w-full min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100" id="scan-note" name="note" rows="4" maxlength="2000"><%= $scan->{note} // '' %></textarea>
+        <div class="mt-3 flex flex-wrap items-center gap-4">
+            <button class="inline-flex min-h-10 items-center justify-center rounded-md border px-4 py-2 font-medium cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-slate-300 bg-white text-slate-700 enabled:hover:bg-slate-100" type="submit">保存</button>
+            <span class="mt-2 block text-xs text-slate-600" role="status" data-note-status></span>
+        </div>
+    </form>
+</section>
+
+<details class="group my-6 min-w-0 rounded-lg border border-slate-200 bg-white p-4 sm:p-6">
+    <summary class="cursor-pointer font-semibold group-open:mb-5">スキャン情報</summary>
+    <dl class="grid gap-x-6 gap-y-1 text-xs sm:grid-cols-[180px_1fr] sm:gap-y-3">
+        <dt class="text-slate-500">Scan ID</dt>
+        <dd class="mb-3 min-w-0 font-mono text-xs wrap-anywhere sm:mb-0"><%= $scan->{id} %></dd>
+        <dt class="text-slate-500">スキャン受付日時（UTC）</dt>
+        <dd class="mb-3 min-w-0 wrap-anywhere sm:mb-0"><%= display($scan->{created_at}) %></dd>
+        <dt class="text-slate-500">スキャン開始 / 終了日時（UTC）</dt>
+        <dd class="mb-3 min-w-0 wrap-anywhere sm:mb-0"><%= display($scan->{started_at}) %> / <%= display($scan->{finished_at}) %></dd>
+        <dt class="text-slate-500">Disk / Root Device</dt>
+        <dd class="mb-3 min-w-0 wrap-anywhere sm:mb-0"><%= display($scan->{target}{disk}{name}) %> / <%= display($scan->{target}{partition}{name}) %></dd>
+        <dt class="text-slate-500">Serial / WWN</dt>
+        <dd class="mb-3 min-w-0 wrap-anywhere sm:mb-0"><%= display($scan->{target}{disk}{serial}) %> / <%= display($scan->{target}{disk}{wwn}) %></dd>
+        <dt class="text-slate-500">Syft / Grype Versions</dt>
+        <dd class="mb-3 min-w-0 wrap-anywhere sm:mb-0"><%= display($scan->{syft_version}) %> / <%= display($scan->{grype_version}) %></dd>
+        <dt class="text-slate-500">Input SBOM SHA-256</dt>
+        <dd class="mb-3 min-w-0 font-mono text-xs wrap-anywhere sm:mb-0"><%= display($scan->{sbom_sha256}) %></dd>
+        <dt class="text-slate-500">脆弱性データ作成日時</dt>
+        <dd class="mb-3 min-w-0 wrap-anywhere sm:mb-0"><%= display($db->{built}) %></dd>
+        <dt class="text-slate-500">脆弱性データの形式バージョン</dt>
+        <dd class="mb-3 min-w-0 wrap-anywhere sm:mb-0"><%= display($db->{schemaVersion}) %></dd>
+        <dt class="text-slate-500"><%= defined $db->{checksum} ? '脆弱性データのチェックサム' : '脆弱性データの取得元' %></dt>
+        <dd class="mb-3 min-w-0 wrap-anywhere sm:mb-0"><%= display($db->{checksum} // $db->{from}) %></dd>
+    </dl>
+</details>
+
+<details class="group my-6 min-w-0 rounded-lg border border-slate-200 bg-white p-4 sm:p-6">
+    <summary class="cursor-pointer font-semibold group-open:mb-5">ログ（末尾 256 KiB）</summary>
+    <pre class="max-h-[500px] overflow-auto rounded-md bg-slate-900 p-4 font-mono text-xs whitespace-pre-wrap text-slate-100 wrap-anywhere"><%= length($log) ? $log : 'ログはまだありません。' %></pre>
+</details>
+
+<details class="group my-6 min-w-0 rounded-lg border border-slate-200 bg-white p-4 sm:p-6">
+    <summary class="cursor-pointer font-semibold group-open:mb-5">その他の操作</summary>
+    <div data-downloads class="flex flex-wrap gap-2.5">
+        % my %names = (syft => 'Syft JSON', cdx => 'CycloneDX JSON', grype => 'Grype JSON', metadata => 'Metadata JSON', log => 'ログ');
+        % for my $kind (qw(syft cdx grype metadata log)) {
+        % next unless $artifacts->{$kind};
+        <a class="inline-flex min-h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 font-medium text-slate-700 hover:bg-slate-100" href="/scans/<%= $scan->{id} %>/download/<%= $kind %>"><%= $names{$kind} %></a>
+        % }
+        <button class="inline-flex min-h-10 cursor-pointer items-center justify-center rounded-md border border-red-700 bg-red-700 px-4 py-2 font-medium text-white enabled:hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50" type="button" data-clear-cache hidden>この結果のキャッシュを削除</button>
+    </div>
+    <p class="mt-4 text-slate-600" role="status" data-cache-status hidden></p>
+</details>

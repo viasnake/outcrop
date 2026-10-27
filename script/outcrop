@@ -1,0 +1,75 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+use Cwd qw(abs_path);
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+
+use Minion;
+use Mojo::File qw(path);
+
+use Outcrop::Config;
+use Outcrop::Disk;
+use Outcrop::Scan;
+use Outcrop::Store;
+use Outcrop::Worker;
+
+my $mode = shift // '';
+die "Usage: script/outcrop web|worker\n"
+    unless ($mode eq 'web' || $mode eq 'worker') && !@ARGV;
+
+if ($mode eq 'web') {
+    run_web();
+}
+else {
+    run_worker(Outcrop::Config->new);
+}
+
+sub run_web {
+    die "Web must run as an unprivileged user\n" unless $>;
+
+    # Keep the foreground entry point for manual operation. systemd starts
+    # Hypnotoad directly and tracks its manager through the PID file.
+    exec $^X, "$FindBin::Bin/../local/bin/hypnotoad", '-f', "$FindBin::Bin/outcrop-web";
+    die "Start Hypnotoad: $!";
+}
+
+sub run_worker {
+    my ($config) = @_;
+
+    my $app_root = abs_path("$FindBin::Bin/..");
+    chdir $app_root or die "chdir: $!";
+
+    # Disk access and scan execution are wired only into Worker. Web receives
+    # a read-only scan store, a separate annotation DB, and the Minion queue.
+    my $store   = Outcrop::Store->new(config => $config, writable => 1);
+    my $disk    = Outcrop::Disk->new(config => $config, app_root => $app_root);
+    my $scanner = Outcrop::Scan->new(config => $config, store    => $store, disk => $disk);
+    my $worker  = Outcrop::Worker->new(
+        config  => $config,
+        store   => $store,
+        disk    => $disk,
+        scanner => $scanner,
+    );
+    $worker->initialize($app_root);
+    initialize_session_secret($config);
+
+    # Initialization establishes root ownership and a sticky queue directory
+    # before this privileged process opens the shared SQLite database.
+    my $minion = Minion->new(SQLite => $config->queue);
+    $minion->backend->sqlite->db;
+    chmod 0660, $config->queue;
+    $worker->minion($minion)->run;
+}
+
+sub initialize_session_secret {
+    my ($config) = @_;
+
+    my $secret = path($config->state, 'web.secret');
+    return if -f $secret;
+
+    require Outcrop;
+    $secret->spurt(Outcrop::random_id() . Outcrop::random_id());
+    chmod 0640, $secret;
+}

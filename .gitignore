@@ -1,0 +1,12 @@
+/.env
+/*.sqlite*
+/var/
+/scans/
+/local/
+/.carton/
+/.tools/
+/.cache/
+*.log
+*.part
+*.tmp
+*.swp

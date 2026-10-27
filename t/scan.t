@@ -1,0 +1,272 @@
+use strict;
+use warnings;
+use Test::More;
+use Digest::SHA qw(sha256_hex);
+use File::Temp  qw(tempdir);
+use Mojo::File  qw(path);
+use Mojo::JSON  qw(encode_json);
+use lib 'lib';
+use Outcrop::Config;
+use Outcrop::Store;
+use Outcrop::Scan;
+
+# These two local fixtures exercise real scan orchestration using ordinary
+# temporary directories; no block device or external scanner is involved.
+{
+
+    package ScanDisk;
+    use Mojo::Base -base;
+    has [qw(failure mounted events)];
+
+    sub resolve {
+        my ($self, $token) = @_;
+        die 'replaced disk' if ($self->failure // '') eq 'identity';
+        return {
+            name      => '/dev/example1',
+            'maj:min' => '8:17',
+            fstype    => 'ext4',
+            token     => $token,
+            identity  => {disk => {name => '/dev/example'}, partition => {name => '/dev/example1'}}
+        };
+    }
+
+    sub make_readonly {
+        my ($self, $target) = @_;
+        die 'read-only verification failed' if ($self->failure // '') eq 'readonly';
+        return $target;
+    }
+
+    sub mount_table {
+        my ($self) = @_;
+        return [] unless $self->mounted;
+        return [{target => $self->mounted, number => '8:17'}];
+    }
+
+    sub mount {
+        my ($self, $target, $root) = @_;
+        $self->mounted("$root");
+        die 'mount command failed after mounting' if ($self->failure // '') eq 'mount';
+        Mojo::File::path($root, $_)->make_path for qw(etc usr var);
+        Mojo::File::path($root, 'etc/os-release')->spurt("ID=ubuntu\n");
+        Mojo::File::path($root, 'etc/fstab')->spurt("UUID=root / ext4 defaults 0 1\n");
+        push @{$self->events}, 'mount';
+    }
+
+    sub verify_mount {
+        my ($self) = @_;
+        die 'missing safety option' if ($self->failure // '') eq 'options';
+    }
+
+    sub unmount {
+        my ($self) = @_;
+        push @{$self->events}, 'unmount';
+        die 'busy mount' if ($self->failure // '') eq 'unmount';
+        $self->mounted(undef);
+    }
+
+    package HostScanDisk;
+    use Mojo::Base 'ScanDisk';
+
+    sub resolve {
+        return {kind => 'host', identity => {kind => 'host', partition => {name => '/'}}};
+    }
+    sub host_exclusions { return ['./proc', './var/lib/outcrop'] }
+    sub make_readonly   { die 'Live root must never change block-device flags' }
+    sub mount           { die 'Live root must never be mounted' }
+    sub verify_mount    { die 'Live root is not a guest mount' }
+    sub unmount         { die 'Live root must never be unmounted' }
+
+    package ScanTools;
+    use Mojo::Base -base;
+
+    has [qw(failure events arguments)];
+
+    sub run {
+        my ($self, $arguments, %options) = @_;
+
+        return Mojo::JSON::encode_json({version => 'test'}) if $arguments->[1] eq 'version';
+        if ($arguments->[0] =~ /syft$/) {
+            $self->arguments($arguments);
+            push @{$self->events}, 'syft';
+            die 'Syft failed' if ($self->failure // '') eq 'syft';
+            kill 'TERM', $$ if ($self->failure // '') eq 'stop';
+            $self->_write_sboms($arguments);
+        }
+        else {
+            push @{$self->events}, 'grype';
+            die 'Grype DB download failed' if ($self->failure // '') eq 'grype';
+            $self->_write_grype_result($options{stdout});
+        }
+        return '';
+    }
+
+    sub _write_sboms {
+        my ($self, $arguments) = @_;
+
+        my $native_sbom = {
+            artifacts  => [],
+            source     => {type => 'directory'},
+            descriptor => {name => 'syft', version => 'test'},
+        };
+        my $cyclonedx_sbom = {
+            bomFormat   => 'CycloneDX',
+            specVersion => '1.6',
+            components  => [],
+        };
+        for my $argument (@$arguments) {
+            if ($argument =~ /^syft-json=(.*)/) {
+                Mojo::File::path($1)->spurt(Mojo::JSON::encode_json($native_sbom));
+            }
+            elsif ($argument =~ /^cyclonedx-json=(.*)/) {
+                my $output =
+                    ($self->failure // '') eq 'cdx'
+                    ? '{broken'
+                    : Mojo::JSON::encode_json($cyclonedx_sbom);
+                Mojo::File::path($1)->spurt($output);
+            }
+        }
+    }
+
+    sub _write_grype_result {
+        my ($self, $file) = @_;
+
+        my $database_status = {
+            built         => '2026-01-01T00:00:00Z',
+            schemaVersion => 'v6.1.10',
+            valid => ($self->failure // '') eq 'stale' ? Mojo::JSON::false : Mojo::JSON::true,
+        };
+        my $result = {
+            matches    => [],
+            descriptor => {
+                name    => 'grype',
+                version => 'test',
+                db      => {status => $database_status},
+            },
+        };
+        Mojo::File::path($file)->spurt(Mojo::JSON::encode_json($result));
+    }
+
+}
+
+my $sequence = 0;
+
+sub scan_case {
+    my ($failure, $kind) = @_;
+    my $directory = tempdir(CLEANUP => 1);
+    my $config    = Outcrop::Config->new(state => $directory, runtime => "$directory/run");
+    my $store     = Outcrop::Store->new(config => $config, writable => 1);
+    $store->initialize;
+    my $events     = [];
+    my $disk_class = ($kind // '') eq 'host' ? 'HostScanDisk' : 'ScanDisk';
+    my $disk       = $disk_class->new(failure => $failure, events => $events);
+    my $tools      = ScanTools->new(failure => $failure, events => $events);
+    my $scanner =
+        Outcrop::Scan->new(config => $config, store => $store, disk => $disk, command => $tools);
+    my $id   = sprintf('%032x', ++$sequence);
+    my $scan = $scanner->run({id => $id, tags => ['sample'], note => '', token => ('a' x 64)});
+    return ($scan, $store, $events, $directory, $tools);
+}
+
+# Reject unsafe targets and verify cleanup at every failure boundary.
+for my $failure (qw(identity readonly options mount syft)) {
+    my ($scan, $store, $events) = scan_case($failure);
+    is($scan->{status}, 'failed', "$failure prevents successful scan");
+    ok(!grep($_ eq 'syft', @$events), "$failure never reaches Syft") unless $failure eq 'syft';
+    if ($failure eq 'identity' || $failure eq 'readonly') {
+        is($scan->{cleanup_status}, 'not_needed', 'No mount was attempted');
+    }
+    else {
+        ok(grep($_ eq 'unmount', @$events), 'Cleanup attempted after failure');
+        is($scan->{cleanup_status}, 'unmounted', 'Cleanup verified');
+    }
+}
+
+# A failed matcher retains both SBOM formats and never publishes a zero-match result.
+{
+    my ($scan, $store, $events) = scan_case('grype');
+    is($scan->{status}, 'partial', 'Grype failure is partial');
+    ok($store->artifact($scan->{id}, 'syft') && $store->artifact($scan->{id}, 'cdx'),
+        'Both SBOMs survive Grype failure');
+    ok(!$store->artifact($scan->{id}, 'grype'),
+        'Failed matching is never published as zero vulnerabilities');
+    is_deeply($events, [qw(mount syft unmount grype)], 'Grype only runs after unmount');
+}
+
+# A remaining mount is unsafe even when both SBOM formats are usable.
+{
+    my ($scan, $store, $events) = scan_case('unmount');
+    is($scan->{status},         'partial',       'Unmount failure retains SBOM as partial');
+    is($scan->{cleanup_status}, 'needs_cleanup', 'Failed unmount remains explicit');
+    ok(!grep($_ eq 'grype', @$events), 'No further work after unmount failure');
+    like(join(' ', @{$scan->{warnings}}), qr/busy mount/, 'Cleanup error visible');
+}
+
+# A valid native SBOM survives failure of the second output format.
+{
+    my ($scan, $store) = scan_case('cdx');
+    is($scan->{status}, 'partial', 'Invalid second output retains valid SBOM');
+    ok($store->artifact($scan->{id},  'syft'), 'Valid native SBOM retained');
+    ok(!$store->artifact($scan->{id}, 'cdx'),  'Incomplete JSON never published');
+}
+
+# A syntactically valid result is insufficient when DB validation failed.
+{
+    my ($scan, $store) = scan_case('stale');
+    is($scan->{status}, 'partial', 'Invalid DB cannot complete a scan');
+    ok(!$store->artifact($scan->{id}, 'grype'), 'Invalid DB result is not evaluated');
+}
+
+# A normal stop request follows the same unmount path as other failures.
+{
+    my ($scan, $store, $events) = scan_case('stop');
+    is($scan->{status},         'interrupted', 'Normal stop interrupts the scan');
+    is($scan->{cleanup_status}, 'unmounted',   'Normal stop cleans up');
+}
+
+# Completion requires all artifacts and a verified unmount.
+{
+    my ($scan, $store, $events) = scan_case('');
+    is($scan->{status}, 'completed', 'All artifacts and verified unmount complete the scan');
+    is(
+        $scan->{sbom_sha256},
+        sha256_hex($store->artifact($scan->{id}, 'syft')->slurp),
+        'Recorded digest identifies the actual saved SBOM'
+    );
+    ok($scan->{grype_db}{status}{built}, 'Actual DB metadata is retained');
+}
+
+# Guest absolute symlinks resolve inside the guest; separate /var is refused.
+{
+    my $root = tempdir(CLEANUP => 1);
+    path($root, $_)->make_path for qw(etc usr var);
+    path($root, 'usr/os-release')->spurt("ID=ubuntu\n");
+    symlink '/usr/os-release', "$root/etc/os-release" or die $!;
+    path($root, 'etc/fstab')
+        ->spurt("UUID=root / ext4 defaults 0 1\nUUID=var /var ext4 defaults 0 2\n");
+    my $scanner = Outcrop::Scan->new;
+    is(
+        "" . $scanner->guest_path($root, 'etc/os-release'),
+        "$root/usr/os-release",
+        'Absolute guest symlink remains inside guest'
+    );
+    eval { $scanner->inspect_root($root) };
+    like(
+        $@,
+        qr/Unsupported separate filesystem: \/var/,
+        'Split application/data filesystems are refused'
+    );
+}
+
+# Host runs reuse artifact validation and matching without any block-device
+# operation, including when a scanner fails or the process is stopped.
+for my $failure ('', 'syft', 'grype', 'stop') {
+    my ($scan, $store, $events, $directory, $tools) = scan_case($failure, 'host');
+    my %expected = ('' => 'completed', syft => 'failed', grype => 'partial', stop => 'interrupted');
+    is($scan->{status},         $expected{$failure}, "Live scan result for '$failure'");
+    is($scan->{cleanup_status}, 'not_needed',        'Live root never needs mount cleanup');
+    ok(!grep($_ eq 'mount' || $_ eq 'unmount', @$events), 'No live mount or unmount was attempted');
+    is($tools->arguments->[2], 'dir:/', 'Live scanner source cannot be supplied by the request');
+    ok(grep($_ eq './var/lib/outcrop', @{$tools->arguments}),
+        'Live scanner receives output exclusion');
+}
+done_testing;
