@@ -85,7 +85,7 @@ for (const form of document.querySelectorAll('[data-scan-form]')) {
     refreshing = true;
     try {
       const response = await fetch('/inventory', {cache: 'no-store', signal: AbortSignal.timeout(15000)});
-      if (!response.ok) throw new Error('ディスク一覧を更新できません。再試行します。');
+      if (!response.ok) throw new Error('ディスク一覧を更新できません。');
       const html = await response.text();
       // Selection may change while the request is in flight.
       const selected = form.querySelector('input[name="target"]:checked')?.value;
@@ -97,7 +97,7 @@ for (const form of document.querySelectorAll('[data-scan-form]')) {
       }
       inventoryStatus.textContent = '';
     } catch (error) {
-      inventoryStatus.textContent = 'ディスク一覧を更新できません。再試行します。';
+      inventoryStatus.textContent = 'ディスク一覧を更新できません。';
       // An old selection must not look current after a failed refresh.
       panel.querySelectorAll('input[name="target"]').forEach(input => {input.disabled = true;});
     } finally {
@@ -128,7 +128,7 @@ for (const form of document.querySelectorAll('[data-scan-form]')) {
       link.href = result.url;
       link.className = 'underline';
       link.textContent = '進捗を確認';
-      status.replaceChildren('スキャンを受け付けました。続けて別のディスクを追加できます。 ', link);
+      status.replaceChildren('スキャンを受け付けました。 ', link);
     } catch (error) {
       status.textContent = error.message;
     } finally {

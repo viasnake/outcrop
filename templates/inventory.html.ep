@@ -8,7 +8,7 @@
 % my $host_selected = 0;
 % my $unavailable = $inventory->{stale} || @{$inventory->{blocked} // []};
 % if ($inventory->{stale}) {
-<p class="my-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-amber-900 wrap-anywhere">ディスク情報を更新できません。Worker の稼働を確認してください。</p>
+<p class="my-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-amber-900 wrap-anywhere">ディスク情報を更新できません。</p>
 % }
 % if (@{$inventory->{errors} // []}) {
 <details class="my-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-amber-900 wrap-anywhere">

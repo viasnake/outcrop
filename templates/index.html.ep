@@ -2,7 +2,6 @@
 % title 'スキャン — Outcrop';
 <h1 class="mb-6 text-2xl font-semibold tracking-tight wrap-anywhere sm:text-3xl">スキャン</h1>
 
-<p class="mb-4 text-sm text-slate-600">ディスク一覧は自動更新されます。実行中でも追加でき、空きがなければ待機します。</p>
 <p class="text-sm text-slate-600" role="status" data-inventory-status></p>
 <form method="post" action="/scans" data-submit-once data-scan-form>
     %= csrf_field

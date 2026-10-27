@@ -96,7 +96,7 @@ sub inventory {
     my $inventory = eval { $self->store->read_json($file) };
     $inventory //= {
         disks  => [],
-        errors => ['Worker のディスク情報を取得できません。Worker の起動を確認してください。'],
+        errors => ['ディスク情報を取得できません。'],
     };
     $inventory->{stale} = time - ($inventory->{updated_at} // 0) > 30;
     return $inventory;
