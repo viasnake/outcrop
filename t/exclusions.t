@@ -43,11 +43,10 @@ for my $mount ('/var/log', '/var/log/audit', '/var/crash', '/var/lib/systemd/cor
 for my $mount ('/usr', '/var', '/var/lib/rpm', '/var/log/../lib', '/var/log-old', '/opt') {
     $root->child('etc/fstab')
         ->spurt("UUID=root / ext4 defaults 0 1\nUUID=apps $mount ext4 defaults 0 2\n");
-    eval { $scanner->inspect_root($root) };
     like(
-        $@,
-        qr/Unsupported separate filesystem/,
-        "Required separate mount $mount is still rejected"
+        join(' ', @{$scanner->inspect_root($root)}),
+        qr/Uninspected separate filesystem: \Q$mount\E \(ext4\)/,
+        "Separate mount $mount is reported without stopping inspection"
     );
 }
 
@@ -58,10 +57,9 @@ for my $mount ('/usr', '/var', '/var/lib/rpm', '/var/log/../lib', '/var/log-old'
     ok(!grep($_ eq './var/log', @{$scanner->exclusions($linked)}),
         'Redirected log directory remains searchable');
     $linked->child('etc/fstab')->spurt("UUID=apps /var/log ext4 defaults 0 2\n");
-    eval { $scanner->inspect_root($linked) };
     like(
-        $@,
-        qr/Unsupported separate filesystem/,
+        join(' ', @{$scanner->inspect_root($linked)}),
+        qr/Uninspected separate filesystem: \/var\/log/,
         'Redirected separate application mount is not silently ignored'
     );
 }
@@ -107,8 +105,53 @@ for my $release (@releases) {
     unlink $guest->child('etc/os-release')     or die $!;
     unlink $guest->child('etc/redhat-release') or die $!;
     unlink $guest->child('etc/fstab')          or die $!;
-    eval { $scanner->inspect_root($guest) };
-    like($@, qr/Missing \/etc\/fstab/, 'Missing release metadata does not bypass scope checks');
+    like(
+        join(' ', @{$scanner->inspect_root($guest)}),
+        qr/Cannot inspect \/etc\/fstab/,
+        'Missing scope metadata is reported without stopping inspection'
+    );
+}
+
+{
+    my $guest = make_root();
+    $guest->child('etc/fstab')
+        ->spurt("# Scope fixture\nserver:/export /mnt/nfs nfs defaults 0 0\n"
+            . "malformed\nfs-example:/ /mnt/efs efs _netdev,tls 0 0\n"
+            . "server:/other /mnt/shared\\040files nfs4 defaults 0 0\n"
+            . "UUID=data /srv xfs defaults 0 0\n");
+    my $warnings = join(' ', @{$scanner->inspect_root($guest)});
+    for my $entry ('/mnt/nfs (nfs)', '/mnt/efs (efs)', '/mnt/shared files (nfs4)', '/srv (xfs)') {
+        like(
+            $warnings,
+            qr/Uninspected separate filesystem: \Q$entry\E/,
+            "Missing filesystem $entry is reported"
+        );
+    }
+    like(
+        $warnings,
+        qr/fstab line 3: unrecognizable entry/,
+        'Malformed entries are reported while later entries are still inspected'
+    );
+
+    $guest->child('etc/fstab')->spurt('x' x 1048576);
+    like(
+        join(' ', @{$scanner->inspect_root($guest)}),
+        qr/Cannot inspect \/etc\/fstab/,
+        'Oversized scope metadata produces a warning'
+    );
+    unlink $guest->child('etc/fstab') or die $!;
+    symlink 'fstab', $guest->child('etc/fstab') or die $!;
+    like(
+        join(' ', @{$scanner->inspect_root($guest)}),
+        qr/Cannot inspect \/etc\/fstab/,
+        'Unresolvable scope metadata produces a warning'
+    );
+    rmdir $guest->child('usr') or die $!;
+    rmdir $guest->child('var') or die $!;
+    symlink 'var', $guest->child('var') or die $!;
+    $warnings = join(' ', @{$scanner->inspect_root($guest)});
+    like($warnings, qr/Uninspected directory: \/usr/, 'Missing directory produces a warning');
+    like($warnings, qr/Uninspected directory: \/var/, 'Unresolvable directory produces a warning');
 }
 
 # Optional real cataloger verification. It uses only temporary regular files,

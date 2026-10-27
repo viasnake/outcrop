@@ -50,6 +50,17 @@ use Outcrop::Scan;
         Mojo::File::path($root, 'etc/os-release')->spurt("ID=ubuntu\n")
             unless ($self->failure // '') eq 'no-release';
         Mojo::File::path($root, 'etc/fstab')->spurt("UUID=root / ext4 defaults 0 1\n");
+        if (($self->failure // '') eq 'separate-filesystems') {
+            Mojo::File::path($root, 'etc/fstab')
+                ->spurt(
+                      "UUID=root / ext4 defaults 0 1\nserver:/export /mnt/nfs nfs defaults 0 0\n"
+                    . "fs-example:/ /mnt/efs efs _netdev,tls 0 0\nUUID=var /var xfs defaults 0 0\n"
+                );
+        }
+        if (($self->failure // '') eq 'missing-scope') {
+            unlink Mojo::File::path($root, 'etc/fstab') or die $!;
+            rmdir Mojo::File::path($root, 'usr')        or die $!;
+        }
         push @{$self->events}, 'mount';
     }
 
@@ -199,6 +210,30 @@ for my $failure (qw(identity readonly options mount syft)) {
     );
 }
 
+# Missing filesystems and scope metadata preserve results and their warnings.
+for my $scope ('separate-filesystems', 'missing-scope') {
+    my ($scan, $store, $events) = scan_case($scope);
+    is($scan->{status}, 'completed', "$scope still completes available scanning");
+    is_deeply($events, [qw(mount syft unmount grype)], 'Tools and cleanup run despite scope gaps');
+    for my $kind (qw(syft cdx grype)) {
+        ok($store->artifact($scan->{id}, $kind), "$kind artifact published despite scope gaps");
+    }
+    my $warnings = join(' ', @{$store->get($scan->{id})->{warnings}});
+    if ($scope eq 'separate-filesystems') {
+        for my $entry ('/mnt/nfs (nfs)', '/mnt/efs (efs)', '/var (xfs)') {
+            like(
+                $warnings,
+                qr/Uninspected separate filesystem: \Q$entry\E/,
+                "$entry warning survives persistence"
+            );
+        }
+    }
+    else {
+        like($warnings, qr/Cannot inspect \/etc\/fstab/,  'Missing fstab warning persists');
+        like($warnings, qr/Uninspected directory: \/usr/, 'Missing directory warning persists');
+    }
+}
+
 # A failed matcher retains both SBOM formats and never publishes a zero-match result.
 {
     my ($scan, $store, $events) = scan_case('grype');
@@ -241,6 +276,21 @@ for my $failure (qw(identity readonly options mount syft)) {
     is($scan->{cleanup_status}, 'unmounted',   'Normal stop cleans up');
 }
 
+# A stop signal caught by a best-effort scope check must still stop the scan.
+{
+    my $guest_path = Outcrop::Scan->can('guest_path');
+    my $signalled  = 0;
+    no warnings 'redefine';
+    local *Outcrop::Scan::guest_path = sub {
+        kill 'TERM', $$ unless $signalled++;
+        return $guest_path->(@_);
+    };
+    my ($scan, $store, $events) = scan_case('');
+    is($scan->{status},         'interrupted', 'Stop during scope inspection is honored');
+    is($scan->{cleanup_status}, 'unmounted',   'Stop during scope inspection cleans up');
+    is_deeply($events, [qw(mount unmount)], 'No scanner starts after the stop request');
+}
+
 # Completion requires all artifacts and a verified unmount.
 {
     my ($scan, $store, $events) = scan_case('');
@@ -267,7 +317,7 @@ for my $kind ('clone', 'host') {
     }
 }
 
-# Guest absolute symlinks resolve inside the guest; separate /var is refused.
+# Guest absolute symlinks resolve inside the guest; separate /var is reported.
 {
     my $root = tempdir(CLEANUP => 1);
     path($root, $_)->make_path for qw(etc usr var);
@@ -281,11 +331,10 @@ for my $kind ('clone', 'host') {
         "$root/usr/os-release",
         'Absolute guest symlink remains inside guest'
     );
-    eval { $scanner->inspect_root($root) };
     like(
-        $@,
-        qr/Unsupported separate filesystem: \/var/,
-        'Split application/data filesystems are refused'
+        join(' ', @{$scanner->inspect_root($root)}),
+        qr/Uninspected separate filesystem: \/var/,
+        'Split application/data filesystems produce warnings'
     );
 }
 
@@ -300,6 +349,11 @@ for my $failure ('', 'syft', 'grype', 'stop') {
     is($tools->arguments->[2], 'dir:/', 'Live scanner source cannot be supplied by the request');
     ok(grep($_ eq './var/lib/outcrop', @{$tools->arguments}),
         'Live scanner receives output exclusion');
+    like(
+        join(' ', @{$scan->{warnings}}),
+        qr/Uninspected live filesystem path.*\.\/proc/,
+        'Live exclusions also produce uninspected warnings'
+    );
 }
 
 # A per-disk lock excludes other processes and is released when its holder

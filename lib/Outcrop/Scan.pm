@@ -88,24 +88,43 @@ sub guest_path {
 sub inspect_root {
     my ($self, $root) = @_;
 
+    my @warnings = (
+        'Only the selected root filesystem was inspected; separate /boot and EFI areas are excluded.',
+        'Detected files do not establish running software, completeness, or freedom from vulnerabilities.',
+    );
     for my $directory (qw(etc usr var)) {
-        die "Not a supported Linux root: missing /$directory"
-            unless -d $self->guest_path($root, $directory);
+        my $available = eval { -d $self->guest_path($root, $directory) };
+        push @warnings, "Uninspected directory: /$directory is missing or inaccessible."
+            unless $available;
     }
 
     # Distribution metadata is optional; let Syft identify it when available.
     my $excluded = $self->exclusions($root);
 
     # fstab is evidence about scan scope, never a source of mount commands.
-    # Refuse application/data mounts that this single-root scan cannot include.
-    my $fstab = $self->guest_path($root, 'etc/fstab');
-    die 'Missing /etc/fstab: cannot determine scan scope' unless -f $fstab && -s $fstab < 1048576;
-    for my $line (split /\n/, $fstab->slurp) {
+    # Missing scope evidence must not discard software visible on this root.
+    my $contents = eval {
+        my $fstab = $self->guest_path($root, 'etc/fstab');
+        die 'missing, inaccessible, or too large' unless -f $fstab && -s $fstab < 1048576;
+        $fstab->slurp;
+    };
+    unless (defined $contents) {
+        push @warnings,
+            'Cannot inspect /etc/fstab: missing, unreadable, or too large; separate filesystems may be uninspected.';
+        return \@warnings;
+    }
+    my $line_number = 0;
+    for my $line (split /\n/, $contents) {
+        $line_number++;
         $line             =~ s/#.*//;
         next unless $line =~ /\S/;
         $line             =~ s/^\s+//;
         my @fields = split /\s+/, $line;
-        die 'Unrecognizable fstab entry' unless @fields >= 4;
+        unless (@fields >= 4) {
+            push @warnings,
+                "Cannot inspect /etc/fstab line $line_number: unrecognizable entry; its filesystem may be uninspected.";
+            next;
+        }
 
         my ($mountpoint, $filesystem) = @fields[1, 2];
         $mountpoint =~ s/\\([0-7]{3})/chr(oct($1))/ge;
@@ -113,22 +132,20 @@ sub inspect_root {
         next if $filesystem eq 'swap';
 
         # A separate log/crash filesystem is deliberately outside our scope.
-        # Resolve components before comparison so /var/log/../lib stays required.
-        my $resolved = '' . $self->guest_path($root, $mountpoint);
+        # Resolve components so /var/log/../lib still produces a scope warning.
+        my $resolved = eval { '' . $self->guest_path($root, $mountpoint) };
         next if grep {
             my $directory = '' . path($root, substr($_, 2));
-            $resolved eq $directory || index($resolved, "$directory/") == 0
+            defined($resolved) && ($resolved eq $directory || index($resolved, "$directory/") == 0)
         } @$excluded;
         next if $filesystem =~ /\A(?:
             proc | sysfs | devtmpfs | devpts | tmpfs | cgroup2? | debugfs |
             securityfs | pstore | mqueue | hugetlbfs
         )\z/x;
-        die "Unsupported separate filesystem: $mountpoint ($filesystem); fstab is never mounted";
+        push @warnings,
+            "Uninspected separate filesystem: $mountpoint ($filesystem); fstab is never mounted; scanning only files available on the selected root.";
     }
-    return [
-        'Only the selected root filesystem was inspected; separate /boot and EFI areas are excluded.',
-        'Detected files do not establish running software, completeness, or freedom from vulnerabilities.',
-    ];
+    return \@warnings;
 }
 
 sub exclusions {
@@ -267,8 +284,17 @@ sub run {
             $target = $self->disk->make_readonly($target);
             $self->_mount_and_inspect_root($scan, $target, $mountpoint);
         }
+
+        # Scope inspection tolerates read failures, but must honor a stop signal
+        # even if it arrived inside a best-effort filesystem check.
+        die "Scan interrupted by stop request\n" if $interrupted;
         my %excluded = map { $_ => 1 } @{$self->exclusions($scan_root)};
-        $excluded{$_} = 1 for $host_scan ? @{$self->disk->host_exclusions} : ();
+        if ($host_scan) {
+            my $host_exclusions = $self->disk->host_exclusions;
+            $excluded{$_} = 1 for @$host_exclusions;
+            push @{$scan->{warnings}},
+                map { "Uninspected live filesystem path (excluded): $_" } @$host_exclusions;
+        }
         $scan->{exclusions} = [sort keys %excluded];
         my ($tool_config, $command_options) = $self->_prepare_tools($scan);
         $self->_generate_sboms($scan, $target, $scan_root, $tool_config, $command_options);
