@@ -269,4 +269,36 @@ for my $failure ('', 'syft', 'grype', 'stop') {
     ok(grep($_ eq './var/lib/outcrop', @{$tools->arguments}),
         'Live scanner receives output exclusion');
 }
+
+# A per-disk lock excludes other processes and is released when its holder
+# exits; distinct disks remain independent.
+{
+    my $dir     = tempdir(CLEANUP => 1);
+    my $config  = Outcrop::Config->new(state => $dir, runtime => "$dir/run");
+    my $scanner = Outcrop::Scan->new(config => $config);
+    my $lock    = $scanner->_acquire_lock('disk-fixture');
+    my $pid     = fork;
+    die "fork: $!" unless defined $pid;
+    if (!$pid) {
+        close $lock;
+        my $other    = eval { $scanner->_acquire_lock('disk-fixture') };
+        my $excluded = !$other && $@ =~ /already being processed/;
+        my $distinct = eval { $scanner->_acquire_lock('disk-other') };
+        POSIX::_exit($excluded && $distinct ? 0 : 1);
+    }
+    waitpid($pid, 0);
+    is($?, 0, 'Other processes can lock distinct disks but cannot share a disk');
+    close $lock;
+    ok($scanner->_acquire_lock('disk-fixture'), 'Disk becomes available after lock release');
+}
+
+{
+    my ($completed, $store) = scan_case('');
+    my $scanner = Outcrop::Scan->new(config => $store->config, store => $store);
+    eval { $scanner->run({id => $completed->{id}, token => 'b' x 64, tags => ['duplicate']}) };
+    like($@, qr/already been processed/, 'Duplicate scan ID cannot start again');
+    is_deeply($store->get($completed->{id}),
+        $completed, 'Duplicate cannot rewrite completed history');
+}
+
 done_testing;

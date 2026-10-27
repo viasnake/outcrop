@@ -1,5 +1,5 @@
 [Unit]
-Description=Outcrop single disk scan worker
+Description=Outcrop disk scan workers
 After=network-online.target
 Wants=network-online.target
 
@@ -9,6 +9,7 @@ User=root
 Group=outcrop
 WorkingDirectory=/opt/outcrop
 ExecStart=/usr/bin/carton exec /usr/bin/perl script/outcrop worker
+Environment=OUTCROP_WORKER_JOBS=2
 UMask=0027
 RuntimeDirectory=outcrop
 RuntimeDirectoryMode=0750

@@ -3,12 +3,14 @@ use Mojo::Base -base;
 use Mojo::File qw(path);
 use Mojo::JSON qw(decode_json);
 use Digest::SHA;
+use Fcntl qw(:flock F_SETFD);
 use Outcrop::Command;
 use Outcrop::Store;
 use Outcrop::Tags;
 
 has [qw(config store disk)];
-has command => sub { Outcrop::Command->new };
+has cache_slot => 1;
+has command    => sub { Outcrop::Command->new };
 
 sub validate_request {
     my ($self, $request) = @_;
@@ -190,11 +192,15 @@ sub run {
     my ($self, $request) = @_;
 
     $request = $self->validate_request($request);
+
+    # Serialize a scan ID before reading or writing its history. Queue data
+    # is Web-writable and may contain duplicate IDs despite submission checks.
+    my $scan_lock  = $self->_acquire_lock('scan-' . $request->{id});
     my $scan       = $self->_start_scan($request);
     my $mountpoint = path($self->config->mounts, $scan->{id});
     my $scan_root  = $mountpoint;
     my ($target, $error, $failed_phase, $interrupted);
-    my $host_scan;
+    my ($host_scan, $disk_lock);
 
     local $SIG{TERM} = local $SIG{INT} = local $SIG{HUP} = sub {
         $interrupted = 1;
@@ -205,8 +211,13 @@ sub run {
     # stop request or command timeout, rejoins the same cleanup path below.
     my $succeeded = eval {
         $self->phase($scan, 'validating');
-        $target         = $self->disk->resolve($request->{token});
-        $host_scan      = ($target->{kind} // '') eq 'host';
+        $target    = $self->disk->resolve($request->{token});
+        $host_scan = ($target->{kind} // '') eq 'host';
+        my $disk_key =
+            $host_scan
+            ? 'host'
+            : ($target->{identity}{disk}{'maj:min'} // $target->{identity}{disk}{name});
+        $disk_lock = $self->_acquire_lock('disk-' . Digest::SHA::sha256_hex($disk_key));
         $scan->{target} = $target->{identity};
         $self->store->save($scan);
 
@@ -252,6 +263,17 @@ sub run {
     $scan->{phase}       = 'finished';
     $self->store->save($scan);
     return $scan;
+}
+
+sub _acquire_lock {
+    my ($self, $name) = @_;
+    my $directory = path($self->config->runtime, 'locks')->make_path({mode => 0750});
+    open my $lock, '>>', $directory->child($name) or die "Scan lock: $!";
+    flock($lock, LOCK_EX | LOCK_NB) or die 'Scan or disk is already being processed';
+
+    # Keep ownership if a scanner subprocess outlives its scan process.
+    fcntl($lock, F_SETFD, 0) or die "Preserve scan lock: $!";
+    return $lock;
 }
 
 sub _start_scan {
@@ -304,10 +326,10 @@ sub _prepare_tools {
         timeout => $self->config->command_timeout,
         log     => '' . $directory->child('scan.log'),
         env     => {
-            SYFT_CHECK_FOR_APP_UPDATE          => 'false',
-            GRYPE_CHECK_FOR_APP_UPDATE         => 'false',
-            GRYPE_DB_CACHE_DIR                 => $self->config->state . '/grype-db',
-            GRYPE_DB_VALIDATE_AGE              => 'true',
+            SYFT_CHECK_FOR_APP_UPDATE  => 'false',
+            GRYPE_CHECK_FOR_APP_UPDATE => 'false',
+            GRYPE_DB_CACHE_DIR    => $self->config->state . '/grype-db/slot-' . $self->cache_slot,
+            GRYPE_DB_VALIDATE_AGE => 'true',
             GRYPE_DB_VALIDATE_BY_HASH_ON_START => 'true',
         },
     };

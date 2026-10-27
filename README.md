@@ -56,6 +56,26 @@ ssh -N -L 8080:127.0.0.1:8080 admin@scanner-host
 
 クローンディスクは単一ディスクの ext4 / XFS のみ対応します。自動マウントしない専用 VM に独立した複製を接続し、アンマウントを確認してから取り外してください。
 
+既定では最大2件を別プロセスで同時に処理し、上限を超えた要求はキューで待機します。並列数は1〜64で設定できます。1なら順次処理になります。CPU・メモリ・ディスクI/Oに合わせて調整してください。
+
+```sh
+sudo systemctl edit outcrop-worker.service
+```
+
+たとえば最大4件にする場合は、次を保存します。
+
+```ini
+[Service]
+Environment=OUTCROP_WORKER_JOBS=4
+```
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl restart outcrop-worker.service
+```
+
+再起動は実行中のスキャンを中断し、アンマウントを試みます。中断したスキャンは自動再実行せず、待機中の要求は再起動後に処理します。並列数の変更は実行中の処理が終わってから行ってください。Grypeのデータベースは実行枠ごとのキャッシュに保存するため、初回は各枠でダウンロードが必要となり、並列数に応じて保存容量も増えます。
+
 ```sh
 # Web のコード更新を反映
 sudo systemctl reload outcrop-web.service

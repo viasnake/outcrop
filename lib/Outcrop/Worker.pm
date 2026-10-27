@@ -5,6 +5,8 @@ use Mojo::JSON qw(from_json);
 use Fcntl      qw(:flock O_CREAT O_RDWR O_NOFOLLOW F_SETFD);
 use Cwd        qw(abs_path);
 use Outcrop::Store;
+use POSIX       qw(WNOHANG);
+use Time::HiRes qw(sleep time);
 
 has [qw(config store disk scanner minion)];
 
@@ -231,12 +233,14 @@ sub publish_inventory {
 
 sub run {
     my ($self) = @_;
+    my $limit = $self->config->worker_jobs;
+    die 'Worker jobs must be an integer from 1 to 64'
+        unless defined $limit && $limit =~ /\A[1-9][0-9]*\z/ && $limit <= 64;
 
     my $blocked_mounts = $self->recover;
     $self->publish_inventory($blocked_mounts);
-    if (@$blocked_mounts) {
-        die 'Residual mounts require manual cleanup: ' . join(', ', @$blocked_mounts) . "\n";
-    }
+    die 'Residual mounts require manual cleanup: ' . join(', ', @$blocked_mounts) . "\n"
+        if @$blocked_mounts;
 
     my $stop_requested;
     local $SIG{TERM} = local $SIG{INT} = local $SIG{HUP} = sub { $stop_requested = 1 };
@@ -244,64 +248,142 @@ sub run {
         scan => sub {
             my ($job, @arguments) = @_;
             die 'Invalid job arguments' unless @arguments == 1;
-
-            my $result = $self->scanner->run($arguments[0]);
-            if ($result->{status} eq 'interrupted' || $result->{cleanup_status} eq 'needs_cleanup')
-            {
-                $stop_requested = 1;
-            }
+            $self->scanner->run($arguments[0]);
         }
     );
 
-    # Execute dequeued Minion jobs synchronously. The local worker lock and
-    # this single loop prevent remote commands from raising disk concurrency.
-    my $worker = $self->minion->worker;
-    $worker->status({jobs => 1, queues => ['default']});
-    $worker->register;
-
-    my $last_inventory_update = 0;
-    my $succeeded             = eval {
+    # Discovery has its own process, so even slow enumeration cannot occupy
+    # a scan slot or delay queue dispatch and child supervision.
+    my $discovery = $self->_start_discovery;
+    my $worker    = $self->minion->worker;
+    $worker->status({jobs => 0 + $limit, queues => ['default']});
+    my %active;
+    my $succeeded = eval {
+        $worker->register;
         while (!$stop_requested) {
-            $self->sync_queue;
-            if (time - $last_inventory_update >= 10) {
-                $self->publish_inventory([]);
-                $last_inventory_update = time;
+            if (waitpid($discovery, WNOHANG) == $discovery) {
+                undef $discovery;
+                die "Disk discovery process exited unexpectedly\n";
             }
+            for my $slot (keys %active) {
+                my $entry = $active{$slot};
+                next unless $entry->{job}->is_finished;
+                delete $active{$slot};
+                $stop_requested = 1 if $self->_reconcile_job($entry);
+            }
+            last if $stop_requested;
+            my %owned   = map  { ($self->config->mounts . '/' . $_->{id}) => 1 } values %active;
+            my @unowned = grep { !$owned{$_->{target}} } @{$self->_managed_mounts};
+            die "Unexpected mount requires manual cleanup\n" if @unowned;
 
+            $self->sync_queue;
             $worker->register;
-            my $job = $worker->dequeue(1, {queues => ['default'], tasks => ['scan']});
-            next unless $job;
-            $self->_execute_job($job);
+            for my $slot (1 .. $limit) {
+                last if $stop_requested;
+                next if $active{$slot};
+                my $job = $worker->dequeue(0, {queues => ['default'], tasks => ['scan']});
+                last unless $job;
+                $self->minion->backend->sqlite->db->query(
+                    'UPDATE minion_jobs SET attempts = 1 WHERE id = ?', $job->id);
+                my $request = eval {
+                    die 'Invalid job arguments' unless @{$job->args} == 1;
+                    $self->scanner->validate_request($job->args->[0]);
+                };
+                unless ($request) {
+                    $job->fail($@);
+                    next;
+                }
+                if (grep { $_->{id} eq $request->{id} } values %active) {
+                    $job->fail('Scan ID is already being processed');
+                    next;
+                }
 
-            # Even an unexpected job failure must not let the next job start
-            # while a mount remains beneath Outcrop's managed directory.
-            my $mount_prefix = $self->config->mounts . '/';
-            my @remaining    = map { $_->{target} }
-                grep { index($_->{target}, $mount_prefix) == 0 } @{$self->disk->mount_table};
-            $self->publish_inventory(\@remaining);
-            $stop_requested = 1 if @remaining;
+                # Each slot owns a persistent Grype cache. Concurrent updates
+                # never replace a database another scanner is using.
+                $job->on(start => sub { $self->scanner->cache_slot($slot) });
+                $active{$slot} = {job => $job, id => $request->{id}};
+                $job->start;
+            }
+            sleep 0.2;
         }
         1;
     };
     my $error = $@;
-    $worker->unregister;
+
+    # Stop admission first, then interrupt children and wait for Scan's
+    # bounded unmount handling. No remaining job is automatically replayed.
+    kill 'TERM', $discovery if $discovery;
+    $_->{job}->kill('TERM') for grep { $_->{job}->pid } values %active;
+    while (%active) {
+        for my $slot (keys %active) {
+            my $entry = $active{$slot};
+            next if $entry->{job}->pid && !$entry->{job}->is_finished;
+            delete $active{$slot};
+            $entry->{job}->fail('Could not start scan process') unless $entry->{job}->pid;
+            $self->_reconcile_job($entry);
+        }
+        sleep 0.05 if %active;
+    }
+    waitpid($discovery, 0) if $discovery;
+    $worker->unregister    if $worker->id;
+    $self->publish_inventory([map { $_->{target} } @{$self->_managed_mounts}]);
     die $error unless $succeeded;
 }
 
-sub _execute_job {
-    my ($self, $job) = @_;
+sub _start_discovery {
+    my ($self) = @_;
+    my $pid = fork;
+    die "Discovery fork: $!" unless defined $pid;
+    return $pid if $pid;
 
-    # Web can modify queue entries. Enforce one attempt again at dispatch;
-    # Scan separately rejects IDs whose disk processing has already begun.
-    $self->minion->backend->sqlite->db->query('UPDATE minion_jobs SET attempts = 1 WHERE id = ?',
-        $job->id);
-    my $error = $job->execute;
-    if (defined $error) {
-        $job->fail($error);
+    my $stopping;
+    local $SIG{TERM} = local $SIG{INT} = local $SIG{HUP} = sub {
+        $stopping = 1;
+        die "Discovery stopped\n";
+    };
+    eval {
+        while (!$stopping) {
+            $self->publish_inventory([]);
+            sleep $self->config->inventory_interval;
+        }
+    };
+    POSIX::_exit($stopping ? 0 : 1);
+}
+
+sub _managed_mounts {
+    my ($self) = @_;
+    my $root = $self->config->mounts;
+    return [grep { $_->{target} eq $root || index($_->{target}, "$root/") == 0 }
+            @{$self->disk->mount_table}];
+}
+
+sub _reconcile_job {
+    my ($self, $entry) = @_;
+    my $scan = $self->store->get($entry->{id});
+    return 0 unless $scan;
+    if ($scan->{status} eq 'queued') {
+
+        # A fork failure or an exception before Scan records its start must
+        # not leave permanent history displaying a job that will never run.
+        $scan->{status}      = 'failed';
+        $scan->{phase}       = 'finished';
+        $scan->{error}       = 'Scan process exited before recording its start';
+        $scan->{finished_at} = Outcrop::Store::now();
+        $self->store->save($scan);
     }
-    else {
-        $job->finish;
+
+    # Only this child's mounts are residual. Other children may still be
+    # cataloging normally under their own scan directories.
+    my $root      = $self->config->mounts . '/' . $entry->{id};
+    my @remaining = grep { $_->{target} eq $root || index($_->{target}, "$root/") == 0 }
+        @{$self->_managed_mounts};
+    if ($scan->{status} eq 'running' || @remaining) {
+        $self->_recover_scan($scan, \@remaining);
     }
+    return
+           $scan->{status} eq 'interrupted'
+        || @remaining
+        || $scan->{cleanup_status} eq 'needs_cleanup';
 }
 
 1;

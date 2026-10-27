@@ -28,6 +28,7 @@ use Outcrop::Worker;
     sub run {
         my ($self, $request) = @_;
         $self->validate_request($request);
+        die 'Failure before recording start' if $request->{note} eq 'fail-before-start';
         my $scan = $self->store->get($request->{id});
         $scan->{status} = 'interrupted';
         $scan->{phase}  = 'finished';
@@ -121,7 +122,12 @@ is_deeply(
     $queued_request->{tags},
     'Worker preserves Unicode tags in permanent history'
 );
+my $early_request = {id => 'e' x 32, token => 'f' x 64, note => 'fail-before-start'};
+my $early_id      = $minion->enqueue(scan => [$early_request], {attempts => 1});
 $worker->run;
+is($minion->job($early_id)->info->{state}, 'failed', 'Early child failure terminates its job');
+is($store->get($early_request->{id})->{status},
+    'failed', 'Early failure cannot leave history queued');
 is($minion->job($next_id)->info->{state},
     'finished', 'Worker executes through real Minion lifecycle');
 is($minion->job($next_id)->info->{attempts}, 1, 'Worker enforces no automatic retry');
