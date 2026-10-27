@@ -1,6 +1,6 @@
 # Outcrop
 
-Ubuntu Server 24.04 LTS / amd64
+Ubuntu Server 22.04 / 24.04 LTS / amd64
 
 ## インストール
 
@@ -76,6 +76,8 @@ mise run setup
 mise run test
 mise run format:check
 ```
+
+CI では Ubuntu 22.04 / 24.04 の標準 Perl でテストし、一時的なループデバイスでディスク情報の取得も確認します。
 
 ## LICENSE
 
