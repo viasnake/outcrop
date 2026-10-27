@@ -11,7 +11,7 @@ die "Web must run as an unprivileged user\n" unless $>;
 my $app = Outcrop->new(mode => 'production');
 $app->config(
     hypnotoad => {
-        listen   => ['http://127.0.0.1:8080'],
+        listen   => ['http://0.0.0.0:8080'],
         workers  => 2,
         pid_file => '/run/outcrop-web/hypnotoad.pid',
     }

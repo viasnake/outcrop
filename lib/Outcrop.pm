@@ -215,11 +215,6 @@ sub _protect_request {
     $headers->header('X-Content-Type-Options' => 'nosniff');
     $headers->header('Referrer-Policy'        => 'no-referrer');
     $headers->cache_control('no-store');
-
-    # Loopback binding alone does not protect against DNS rebinding.
-    my $host = lc($controller->req->url->to_abs->host // '');
-    return if $host eq '127.0.0.1' || $host eq 'localhost';
-    $controller->render(text => 'Invalid Host', status => 403);
 }
 
 sub _show_index {

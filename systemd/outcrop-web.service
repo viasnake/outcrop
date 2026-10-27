@@ -1,5 +1,5 @@
 [Unit]
-Description=Outcrop loopback web interface
+Description=Outcrop web interface
 After=network.target outcrop-worker.service
 Wants=outcrop-worker.service
 

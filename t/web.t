@@ -207,7 +207,16 @@ sub job_count {
         ->hash->{count};
 }
 
-$t->get_ok('/scans/' . $id => {Host => 'attacker.example'})->status_is(403);
+for my $host ('localhost:8080', '127.0.0.1:8080', '192.0.2.10:8080', 'scanner.example:8080') {
+    $t->get_ok('/scans/' . $id => {Host => $host})->status_is(200);
+    $t->post_ok(
+        '/scans' => {Host => $host} => form => {
+            scan_id => 'b' x 32,
+            target  => $token,
+            clone   => 'yes'
+        }
+    )->status_is(403);
+}
 $t->post_ok('/scans' => form => {scan_id => 'b' x 32, target => $token, clone => 'yes'})
     ->status_is(403);
 is(job_count(), 0, 'Rejected requests cannot enqueue privileged scan work');
