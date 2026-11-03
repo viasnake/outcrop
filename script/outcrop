@@ -1,11 +1,11 @@
-#!/usr/bin/perl
+#!perl
 use strict;
 use warnings;
 
-use Cwd qw(abs_path);
 use FindBin;
 use lib "$FindBin::Bin/../lib";
 
+use App::Outcrop;
 use Minion;
 use Mojo::File qw(path);
 
@@ -16,7 +16,7 @@ use Outcrop::Store;
 use Outcrop::Worker;
 
 my $mode = shift // '';
-die "Usage: script/outcrop web|worker\n"
+die "Usage: outcrop web|worker\n"
     unless ($mode eq 'web' || $mode eq 'worker') && !@ARGV;
 
 if ($mode eq 'web') {
@@ -31,14 +31,19 @@ sub run_web {
 
     # Keep the foreground entry point for manual operation. systemd starts
     # Hypnotoad directly and tracks its manager through the PID file.
-    exec $^X, "$FindBin::Bin/../local/bin/hypnotoad", '-f', "$FindBin::Bin/outcrop-web";
+    my $web_script = "$FindBin::Bin/outcrop-web";
+    my $local_hypnotoad = "$FindBin::Bin/../local/bin/hypnotoad";
+    if (-f $local_hypnotoad) {
+        exec $^X, $local_hypnotoad, '-f', $web_script;
+    }
+    exec 'hypnotoad', '-f', $web_script;
     die "Start Hypnotoad: $!";
 }
 
 sub run_worker {
     my ($config) = @_;
 
-    my $app_root = abs_path("$FindBin::Bin/..");
+    my $app_root = App::Outcrop::resource_root();
     chdir $app_root or die "chdir: $!";
 
     # Disk access and scan execution are wired only into Worker. Web receives

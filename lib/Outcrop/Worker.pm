@@ -57,6 +57,21 @@ sub _verify_runtime_code {
         next unless "$file" =~ m{/(?:lib|script)/} || "$file" =~ /\.pm\z/;
         $self->trusted_path($file);
     }
+    # Installed applications may keep the Perl modules outside the asset root.
+    # Reject writable module paths before starting this privileged worker.
+    my $module_directory = path($INC{'Outcrop/Worker.pm'})->dirname;
+    for my $file ($module_directory->list_tree->each) {
+        $self->trusted_path($file);
+    }
+    for my $file ($0, $INC{'Outcrop.pm'}, $INC{'App/Outcrop.pm'}) {
+        next unless defined $file;
+        $self->trusted_path($file);
+    }
+    for my $include (@INC) {
+        next if ref($include) || !-d $include;
+        $self->trusted_path($include);
+    }
+
     for my $executable ($self->config->syft, $self->config->grype) {
         $self->trusted_path($executable);
     }
