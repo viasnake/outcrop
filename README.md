@@ -1,5 +1,19 @@
 # Outcrop
 
+CPAN distribution: `App::Outcrop` (command: `outcrop`).
+
+## CPAN からのインストール
+
+```sh
+cpanm App::Outcrop
+```
+
+CPAN版にはCLI、Perlモジュール、Webテンプレート、静的ファイルが含まれます。
+Syft・Grypeの導入と、`outcrop` ユーザー・グループの作成、systemd設定は別途必要です。
+Workerはroot権限で動作し、実行コードがroot所有かつ他ユーザーから書き換えられないことを検証します。
+ユーザーのホームディレクトリなどにインストールしたPerlモジュールでroot Workerを起動しないでください。
+以下の`/opt/outcrop`による従来のデプロイ手順は引き続き利用できます。
+
 実行ホスト: Ubuntu Server 22.04 / 24.04 LTS / amd64
 
 ## インストール

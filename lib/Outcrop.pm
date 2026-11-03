@@ -1,6 +1,7 @@
 package Outcrop;
 use Mojo::Base 'Mojolicious';
 use utf8;
+use App::Outcrop;
 
 use Fcntl qw(:flock SEEK_END);
 use Minion;
@@ -20,6 +21,11 @@ has queue    => sub { Minion->new(SQLite => shift->settings->queue) };
 
 sub startup {
     my ($self) = @_;
+
+    # Resolve templates and static assets in both a source checkout and CPAN installation.
+    my $resources = App::Outcrop::resource_root();
+    $self->renderer->paths(["$resources/templates"]);
+    $self->static->paths(["$resources/public"]);
 
     $self->_configure_sessions;
     $self->store->annotations->initialize;
