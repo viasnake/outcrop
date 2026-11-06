@@ -1,4 +1,4 @@
-package Outcrop::Config;
+package App::Outcrop::Config;
 use Mojo::Base -base;
 
 has state              => '/var/lib/outcrop';

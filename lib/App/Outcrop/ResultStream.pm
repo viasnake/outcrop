@@ -1,4 +1,4 @@
-package Outcrop::ResultStream;
+package App::Outcrop::ResultStream;
 use strict;
 use warnings;
 use parent 'JSON::SL::Tuba';

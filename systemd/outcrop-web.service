@@ -7,12 +7,12 @@ Wants=outcrop-worker.service
 Type=forking
 User=outcrop
 Group=outcrop
-WorkingDirectory=/opt/outcrop
 RuntimeDirectory=outcrop-web
 RuntimeDirectoryMode=0750
 PIDFile=/run/outcrop-web/hypnotoad.pid
-ExecStart=/usr/bin/carton exec hypnotoad script/outcrop-web
-ExecReload=/usr/bin/carton exec hypnotoad script/outcrop-web
+Environment=HYPNOTOAD_FOREGROUND=0
+ExecStart=/usr/local/bin/outcrop web
+ExecReload=/bin/kill -USR2 $MAINPID
 KillSignal=SIGQUIT
 KillMode=mixed
 TimeoutStopSec=150

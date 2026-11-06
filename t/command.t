@@ -5,9 +5,9 @@ use File::Temp  qw(tempdir);
 use Mojo::File  qw(path);
 use Time::HiRes qw(time);
 use lib 'lib';
-use Outcrop::Command;
+use App::Outcrop::Command;
 
-my $command = Outcrop::Command->new;
+my $command = App::Outcrop::Command->new;
 my $dir     = tempdir(CLEANUP => 1);
 
 # Metacharacters are literal arguments, never shell input.

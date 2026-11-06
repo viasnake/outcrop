@@ -3,17 +3,17 @@ use strict;
 use warnings;
 
 use FindBin;
-use lib "$FindBin::Bin/../lib";
-use Outcrop;
+use lib -f "$FindBin::Bin/../lib/App/Outcrop.pm" ? ("$FindBin::Bin/../lib") : ();
+use App::Outcrop;
 
 die "Web must run as an unprivileged user\n" unless $>;
 
-my $app = Outcrop->new(mode => 'production');
+my $app = App::Outcrop->new(mode => 'production');
 $app->config(
     hypnotoad => {
-        listen   => ['http://0.0.0.0:8080'],
+        listen   => [$ENV{OUTCROP_LISTEN} // 'http://0.0.0.0:8080'],
         workers  => 2,
-        pid_file => '/run/outcrop-web/hypnotoad.pid',
+        pid_file => $ENV{OUTCROP_WEB_PID_FILE} // '/run/outcrop-web/hypnotoad.pid',
     }
 );
 $app->start;

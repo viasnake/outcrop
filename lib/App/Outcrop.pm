@@ -1,6 +1,8 @@
-package Outcrop;
+package App::Outcrop;
 use Mojo::Base 'Mojolicious';
 use utf8;
+
+our $VERSION = '0.01';
 
 use Fcntl qw(:flock SEEK_END);
 use Minion;
@@ -9,18 +11,21 @@ use Mojo::JSON qw(from_json);
 use Mojo::IOLoop::Subprocess;
 use Mojo::Util qw(decode);
 
-use Outcrop::Config;
-use Outcrop::Scan;
-use Outcrop::Store;
-use Outcrop::Results;
+use App::Outcrop::Config;
+use App::Outcrop::Paths;
+use App::Outcrop::Scan;
+use App::Outcrop::Store;
+use App::Outcrop::Results;
 
-has settings => sub { Outcrop::Config->new };
-has store    => sub { Outcrop::Store->new(config => shift->settings) };
+has settings => sub { App::Outcrop::Config->new };
+has store    => sub { App::Outcrop::Store->new(config => shift->settings) };
 has queue    => sub { Minion->new(SQLite => shift->settings->queue) };
 
 sub startup {
     my ($self) = @_;
 
+    $self->renderer->paths([App::Outcrop::Paths::assets()->child('templates')->to_string]);
+    $self->static->paths([App::Outcrop::Paths::assets()->child('public')->to_string]);
     $self->_configure_sessions;
     $self->store->annotations->initialize;
     $self->_register_display_helpers;
@@ -68,7 +73,7 @@ sub pending_scans {
 
     # A submission is visible before Worker copies it into permanent history.
     # Treat queue arguments as untrusted input in both processes.
-    my $scanner = Outcrop::Scan->new(
+    my $scanner = App::Outcrop::Scan->new(
         config => $self->settings,
         store  => $self->store,
     );
@@ -265,13 +270,13 @@ sub _start_scan {
     push @tags, $draft_tag if $draft_tag =~ /\S/;
     my $request = {
         id    => $controller->param('scan_id'),
-        tags  => eval { Outcrop::Tags->validate(\@tags) },
+        tags  => eval { App::Outcrop::Tags->validate(\@tags) },
         note  => $controller->param('note') // '',
         token => $controller->param('target'),
     };
     return $controller->render(text => 'タグを確認してください。', status => 400)
         unless defined $request->{tags};
-    my $scanner = Outcrop::Scan->new(store => $self->store);
+    my $scanner = App::Outcrop::Scan->new(store => $self->store);
     return $controller->render(text => '入力値を確認してください。', status => 400)
         unless eval { $scanner->validate_request($request) };
 
@@ -366,7 +371,7 @@ sub _show_scan {
 
     my $artifacts = $self->_artifacts($scan->{id});
     my (%versions, %result_states);
-    my $results = Outcrop::Results->new(config => $self->settings);
+    my $results = App::Outcrop::Results->new(config => $self->settings);
     for my $kind (qw(syft grype)) {
         next unless $artifacts->{$kind};
         my $revision = $results->revision($artifacts->{$kind});
@@ -390,7 +395,7 @@ sub _result_page {
     return $controller->reply->not_found unless $kind eq 'syft' || $kind eq 'grype';
     my $source = $self->store->artifact($id, $kind);
     return $controller->reply->not_found unless $source;
-    my $results  = Outcrop::Results->new(config => $self->settings);
+    my $results  = App::Outcrop::Results->new(config => $self->settings);
     my $revision = $results->revision($source);
     my $file     = $results->available($id, $kind, $revision);
     return $controller->render(status => 409, json => {error => '一覧データを作成してください。'}) unless $file;
@@ -447,7 +452,7 @@ sub _rebuild_result {
         if $scan->{status} eq 'running' || $scan->{status} eq 'queued';
     my $source = $self->store->artifact($id, $kind);
     return $controller->reply->not_found unless $source;
-    my $results = Outcrop::Results->new(config => $self->settings);
+    my $results = App::Outcrop::Results->new(config => $self->settings);
     my $file    = $results->location($id, $kind);
     my $lock    = $results->build_lock($file);
     return $controller->render(status => 409, json => {error => 'ほかの一覧を作成中です。完了後に再実行してください。'})
@@ -494,7 +499,7 @@ sub _result_build_status {
     my ($id,   $kind)       = map { $controller->param($_) // '' } qw(id kind);
     return $controller->reply->not_found unless $kind eq 'syft' || $kind eq 'grype';
     return $controller->reply->not_found unless $self->store->artifact($id, $kind);
-    my $results = Outcrop::Results->new(config => $self->settings);
+    my $results = App::Outcrop::Results->new(config => $self->settings);
     my $status  = $results->build_status($results->location($id, $kind));
     return $controller->render(status => 409, json => {error => '画面を更新して状態を確認してください。'})
         unless ($controller->param('token') // '') eq ($status->{token} // '');
@@ -529,7 +534,7 @@ sub _update_tags {
     my $operation = $controller->param('operation') // '';
     return $controller->render(text => 'Invalid tag operation', status => 400)
         unless $operation eq 'add' || $operation eq 'remove';
-    my $values = eval { Outcrop::Tags->validate([$controller->param('tag')]); };
+    my $values = eval { App::Outcrop::Tags->validate([$controller->param('tag')]); };
     return $controller->render(text => 'タグは20個まで、各120文字以内で入力してください。', status => 400)
         unless defined $values;
     my $tags = eval {
@@ -552,7 +557,7 @@ sub _update_note {
         if $controller->validation->csrf_protect->has_error('csrf_token');
     my $scan = $self->_find_scan($controller->param('id'));
     return $controller->reply->not_found unless $scan;
-    my $note = eval { Outcrop::Annotations->validate_note($controller->param('note')); };
+    my $note = eval { App::Outcrop::Annotations->validate_note($controller->param('note')); };
     return $controller->render(text => 'メモは2000文字以内で入力してください。', status => 400)
         unless defined $note;
     $self->store->annotations->save_note($scan->{id}, $note);
@@ -600,3 +605,29 @@ sub _download_artifact {
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+App::Outcrop - Linux disk SBOM and vulnerability inspection
+
+=head1 SYNOPSIS
+
+  outcrop web
+  outcrop worker
+
+=head1 DESCRIPTION
+
+Outcrop uses Syft and Grype to inspect Linux filesystems and presents saved
+results through a Mojolicious web interface. Web runs without privileges;
+the disk worker requires root. Perl 5.34 or newer and Linux are required.
+
+See L<https://github.com/viasnake/outcrop#readme> for external dependencies,
+permissions, service setup and supported disk layouts.
+
+=head1 LICENSE
+
+Copyright snake. Licensed under the Apache License, Version 2.0.
+
+=cut

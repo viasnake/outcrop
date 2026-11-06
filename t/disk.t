@@ -5,12 +5,12 @@ use File::Temp qw(tempdir tempfile);
 use Mojo::File qw(path);
 use Mojo::JSON qw(encode_json);
 use lib 'lib';
-use Outcrop::Config;
-use Outcrop::Disk;
+use App::Outcrop::Config;
+use App::Outcrop::Disk;
 
 # Model a scanner root on LVM and a separate ext4 clone using device numbers,
 # so parent traversal can be tested without reading the host device inventory.
-my $disk  = Outcrop::Disk->new(config => Outcrop::Config->new);
+my $disk  = App::Outcrop::Disk->new(config => App::Outcrop::Config->new);
 my %nodes = (
     '8:0' => {
         name      => '/dev/sda',
@@ -69,7 +69,7 @@ $sysfs->child('8:17', 'start')->spurt("4096\n");
 $sysfs->child('8:18', 'start')->spurt("2048\n");
 my %partition = %{$nodes{'8:17'}};
 delete $partition{start};
-my $discovery_disk = Outcrop::Disk->new(
+my $discovery_disk = App::Outcrop::Disk->new(
     sysfs_root => "$sysfs",
     command    => InventoryCommand->new(
         json => encode_json(
@@ -285,7 +285,7 @@ ok(!classify({}, ['Unresolved host storage'])->{disks}[1]{targets}[0]{selectable
 {
 
     package MissingDisk;
-    use Mojo::Base 'Outcrop::Disk';
+    use Mojo::Base 'App::Outcrop::Disk';
     sub inventory { return {disks => []} }
 }
 eval { MissingDisk->new->resolve($token) };
@@ -305,7 +305,7 @@ is(
     sub run { return "1\n" }
 
     package VerifiedDisk;
-    use Mojo::Base 'Outcrop::Disk';
+    use Mojo::Base 'App::Outcrop::Disk';
     has entries => sub { [] };
     sub mount_table     { shift->entries }
     sub verify_sequence { return 1 }
@@ -353,7 +353,7 @@ like($@, qr/source verification/, 'A different actual mount source is rejected')
     }
 
     package SequenceDisk;
-    use Mojo::Base 'Outcrop::Disk';
+    use Mojo::Base 'App::Outcrop::Disk';
     has sequences       => sub { [999] };
     has checked_handles => sub { [] };
 
@@ -394,7 +394,7 @@ like($@, qr/descriptor unavailable/, 'Sequence checks require held device descri
 {
 
     package HostDisk;
-    use Mojo::Base 'Outcrop::Disk';
+    use Mojo::Base 'App::Outcrop::Disk';
     has root_number => '253:0';
 
     sub mount_table {
@@ -410,7 +410,7 @@ like($@, qr/descriptor unavailable/, 'Sequence checks require held device descri
         ];
     }
 }
-my $live_disk = HostDisk->new(config => Outcrop::Config->new);
+my $live_disk = HostDisk->new(config => App::Outcrop::Config->new);
 my $live      = $live_disk->host_target;
 is($live_disk->resolve($live->{token})->{kind},
     'host', 'Mounted LVM root can be selected for live reading');
@@ -438,7 +438,7 @@ isnt($live_disk->host_target->{token},
     sub _protect_scanner_storage { return }
     sub _exclude_active_swap     { return }
 }
-my $inventory_disk = InventoryDisk->new(config => Outcrop::Config->new);
+my $inventory_disk = InventoryDisk->new(config => App::Outcrop::Config->new);
 my $mapped         = $inventory_disk->inventory;
 is_deeply([map { $_->{name} } grep { $_->{system_root} } @{$mapped->{disks}}],
     ['/dev/sda'], 'LVM root is displayed on its physical backing disk');

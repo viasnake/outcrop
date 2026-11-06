@@ -24,12 +24,12 @@ run = "node t/results-cache.mjs"
 
 [tasks.format]
 description = "Format Perl sources with the repository style"
-run = "perl -I '{{config_root}}/.tools/carton/lib/perl5' '{{config_root}}/.tools/carton/bin/carton' exec perltidy -b -bext=/ cpanfile script/outcrop script/outcrop-web script/benchmark-results lib/Outcrop.pm lib/Outcrop/*.pm t/*.t"
+run = "perl -I '{{config_root}}/.tools/carton/lib/perl5' '{{config_root}}/.tools/carton/bin/carton' exec perltidy -b -bext=/ Makefile.PL cpanfile script/outcrop script/outcrop-web script/benchmark-results lib/App/Outcrop.pm lib/App/Outcrop/*.pm t/*.t"
 
 [tasks."format:check"]
 description = "Check Perl source formatting without changing files"
 run = """
-for source_file in cpanfile script/outcrop script/outcrop-web script/benchmark-results lib/Outcrop.pm lib/Outcrop/*.pm t/*.t; do
+for source_file in Makefile.PL cpanfile script/outcrop script/outcrop-web script/benchmark-results lib/App/Outcrop.pm lib/App/Outcrop/*.pm t/*.t; do
     perl -I '{{config_root}}/.tools/carton/lib/perl5' '{{config_root}}/.tools/carton/bin/carton' exec perltidy --assert-tidy -st "$source_file" > /dev/null || exit 1
 done
 """

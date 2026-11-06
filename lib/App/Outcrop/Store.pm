@@ -1,8 +1,8 @@
-package Outcrop::Store;
+package App::Outcrop::Store;
 use Mojo::Base -base;
 
 use DBI;
-use Outcrop::Annotations;
+use App::Outcrop::Annotations;
 use DBD::SQLite::Constants qw(SQLITE_OPEN_CREATE SQLITE_OPEN_READONLY SQLITE_OPEN_READWRITE);
 use Mojo::File             qw(path);
 use Mojo::JSON             qw(decode_json encode_json from_json to_json);
@@ -10,7 +10,7 @@ use POSIX                  qw(strftime);
 
 has 'config';
 has writable    => 0;
-has annotations => sub { Outcrop::Annotations->new(config => shift->config) };
+has annotations => sub { App::Outcrop::Annotations->new(config => shift->config) };
 
 sub valid_id {
     my ($self, $id) = @_;

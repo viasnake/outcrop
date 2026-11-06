@@ -11,3 +11,15 @@
 *.part
 *.tmp
 *.swp
+
+/Makefile
+/Makefile.old
+/MYMETA.json
+/MYMETA.yml
+/META.json
+/META.yml
+/blib/
+/pm_to_blib
+/App-Outcrop-*/
+/App-Outcrop-*.tar.gz
+/MANIFEST.bak

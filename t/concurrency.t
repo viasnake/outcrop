@@ -7,10 +7,10 @@ use Minion;
 use POSIX       qw(WNOHANG);
 use Time::HiRes qw(time sleep);
 use lib 'lib';
-use Outcrop::Config;
-use Outcrop::Store;
-use Outcrop::Scan;
-use Outcrop::Worker;
+use App::Outcrop::Config;
+use App::Outcrop::Store;
+use App::Outcrop::Scan;
+use App::Outcrop::Worker;
 
 {
 
@@ -40,7 +40,7 @@ use Outcrop::Worker;
     }
 
     package ConcurrentScan;
-    use Mojo::Base 'Outcrop::Scan';
+    use Mojo::Base 'App::Outcrop::Scan';
 
     sub run {
         my ($self, $request) = @_;
@@ -78,7 +78,7 @@ sub wait_for {
 for my $limit (1, 2) {
     subtest "Admission and queue with $limit slots" => sub {
         my $dir    = tempdir(CLEANUP => 1);
-        my $config = Outcrop::Config->new(
+        my $config = App::Outcrop::Config->new(
             state              => $dir,
             runtime            => "$dir/run",
             worker_jobs        => $limit,
@@ -86,11 +86,11 @@ for my $limit (1, 2) {
         );
         path($dir, 'queue')->make_path;
         path($config->mounts)->make_path;
-        my $store = Outcrop::Store->new(config => $config, writable => 1);
+        my $store = App::Outcrop::Store->new(config => $config, writable => 1);
         $store->initialize;
         my $queue   = Minion->new(SQLite => $config->queue);
         my $scanner = ConcurrentScan->new(config => $config, store => $store);
-        my $worker  = Outcrop::Worker->new(
+        my $worker  = App::Outcrop::Worker->new(
             config  => $config,
             store   => $store,
             minion  => $queue,
@@ -165,15 +165,16 @@ for my $limit (1, 2) {
 
 for my $failure ('crash', 'cleanup') {
     subtest "Stop admission after $failure" => sub {
-        my $dir    = tempdir(CLEANUP => 1);
-        my $config = Outcrop::Config->new(state => $dir, runtime => "$dir/run", worker_jobs => 1);
+        my $dir = tempdir(CLEANUP => 1);
+        my $config =
+            App::Outcrop::Config->new(state => $dir, runtime => "$dir/run", worker_jobs => 1);
         path($dir, 'queue')->make_path;
         path($config->mounts)->make_path;
-        my $store = Outcrop::Store->new(config => $config, writable => 1);
+        my $store = App::Outcrop::Store->new(config => $config, writable => 1);
         $store->initialize;
         my $queue   = Minion->new(SQLite => $config->queue);
         my $scanner = ConcurrentScan->new(config => $config, store => $store);
-        my $worker  = Outcrop::Worker->new(
+        my $worker  = App::Outcrop::Worker->new(
             config  => $config,
             store   => $store,
             minion  => $queue,
@@ -220,7 +221,8 @@ for my $failure ('crash', 'cleanup') {
 }
 
 for my $invalid (0, -1, 65, '2.5', 'abc', '') {
-    my $worker = Outcrop::Worker->new(config => Outcrop::Config->new(worker_jobs => $invalid));
+    my $worker =
+        App::Outcrop::Worker->new(config => App::Outcrop::Config->new(worker_jobs => $invalid));
     eval { $worker->run };
     like($@, qr/Worker jobs must be/, "Reject invalid concurrency '$invalid' before startup");
 }

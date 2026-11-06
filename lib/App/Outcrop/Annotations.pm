@@ -1,10 +1,10 @@
-package Outcrop::Annotations;
+package App::Outcrop::Annotations;
 use Mojo::Base -base;
 
 use DBI;
 use Mojo::File qw(path);
 use Mojo::JSON qw(from_json to_json);
-use Outcrop::Tags;
+use App::Outcrop::Tags;
 
 has 'config';
 
@@ -47,7 +47,7 @@ sub change_tags {
     my ($self, $id, $original, $operation, $values) = @_;
     die 'Invalid scan ID'       unless ($id // '') =~ /\A[0-9a-f]{32}\z/;
     die 'Invalid tag operation' unless $operation eq 'add' || $operation eq 'remove';
-    $values = Outcrop::Tags->validate($values);
+    $values = App::Outcrop::Tags->validate($values);
     die 'Remove exactly one tag' if $operation eq 'remove' && @$values != 1;
 
     # Serialize read-modify-write so two tabs adding different tags do not
@@ -60,7 +60,7 @@ sub change_tags {
         my @combined = grep { !$seen{$_}++ } (@$current, @$values);
         $tags =
             $operation eq 'add'
-            ? Outcrop::Tags->validate(\@combined)
+            ? App::Outcrop::Tags->validate(\@combined)
             : [grep { $_ ne $values->[0] } @$current];
         $self->db->do(
             'INSERT INTO scan_tags (scan_id, tags) VALUES (?, ?) ON CONFLICT(scan_id) DO UPDATE SET tags = excluded.tags',

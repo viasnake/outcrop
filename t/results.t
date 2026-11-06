@@ -6,14 +6,14 @@ use File::Temp qw(tempdir);
 use Mojo::File qw(path);
 use Mojo::JSON qw(encode_json);
 use lib 'lib';
-use Outcrop::Config;
-use Outcrop::Results;
-use Outcrop::Scan;
-use Outcrop::ResultStream;
+use App::Outcrop::Config;
+use App::Outcrop::Results;
+use App::Outcrop::Scan;
+use App::Outcrop::ResultStream;
 
 my $root    = tempdir(CLEANUP => 1);
 my $source  = path($root, 'grype.json');
-my $results = Outcrop::Results->new(config => Outcrop::Config->new(state => $root));
+my $results = App::Outcrop::Results->new(config => App::Outcrop::Config->new(state => $root));
 my $file    = $results->location('a' x 32, 'grype');
 my @matches = map {
     {
@@ -78,7 +78,7 @@ like($@, qr/count mismatch/, 'Missing row is diagnosed');
 $db->disconnect;
 $results->build($source, $file, 'grype', $revision, force => 1);
 
-my $scanner  = Outcrop::Scan->new;
+my $scanner  = App::Outcrop::Scan->new;
 my $envelope = $scanner->valid_artifact($source, 'grype');
 is_deeply($envelope->{matches}, [], 'Validation retains no full result array');
 is($envelope->{descriptor}{db}{valid}, 1, 'Validation keeps database identity');
@@ -109,7 +109,7 @@ my $name  = ('境界"\\' x 30000);
 $large->spurt(
     encode_json({artifacts => [{name => $name}], descriptor => {name => 'syft'}, source => {}}));
 my @rows;
-Outcrop::ResultStream->read($large, 'syft', sub { push @rows, $_[0] });
+App::Outcrop::ResultStream->read($large, 'syft', sub { push @rows, $_[0] });
 is($rows[0]{name}, $name, 'UTF-8 and escapes survive chunk boundaries');
 is($scanner->valid_artifact($large, 'syft')->{descriptor}{name},
     'syft', 'Syft validation uses streaming envelope');

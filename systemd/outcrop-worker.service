@@ -7,8 +7,7 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=outcrop
-WorkingDirectory=/opt/outcrop
-ExecStart=/usr/bin/carton exec /usr/bin/perl script/outcrop worker
+ExecStart=/usr/local/bin/outcrop worker
 Environment=OUTCROP_WORKER_JOBS=2
 UMask=0027
 RuntimeDirectory=outcrop
