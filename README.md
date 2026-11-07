@@ -43,22 +43,26 @@ sha256sum --check --ignore-missing grype_0.121.0_checksums.txt && \
 
 ### CPAN 版
 
-初回公開前はローカルの配布アーカイブを使用します。CPAN 公開後はモジュール名でインストールできます。
+依存モジュールも含めて Outcrop 専用の領域にインストールします。`outcrop_prefix` は root が管理する絶対パスに変更できます。初回公開前はローカルの配布アーカイブを使用します。
 
 ```sh
-# 公開前
-sudo sh -c 'umask 0022; cpanm ./App-Outcrop-0.01.tar.gz'
+outcrop_prefix=/opt/outcrop-perl
 
-# CPAN 公開後
-sudo sh -c 'umask 0022; cpanm App::Outcrop'
+# 公開前。CPAN 公開後はアーカイブ名を App::Outcrop に置き換える
+sudo cpanm --local-lib-contained "$outcrop_prefix" --exclude-vendor ./App-Outcrop-0.01.tar.gz
+
+# 所有者・権限の設定は、この専用領域だけに適用する
+sudo chown -R root:root "$outcrop_prefix"
+sudo chmod -R go-w "$outcrop_prefix"
+export PATH="$outcrop_prefix/bin:$PATH"
 
 outcrop --version
-# Ubuntu の site ライブラリのディレクトリ権限を設定
-sudo perl -MConfig -e 'exec "find", @Config{qw(installsitelib installsitearch)}, "-type", "d", "-exec", "chmod", "go-w", "{}", "+"'
-outcrop_units_dir=$(perl -MApp::Outcrop::Paths -e 'print App::Outcrop::Paths::assets()->child("systemd")')
+outcrop_exec="$outcrop_prefix/bin/outcrop"
+outcrop_working_dir=/
+outcrop_units_dir="$outcrop_prefix/lib/perl5/App/Outcrop/share/systemd"
 ```
 
-Worker が読み込む Perl・モジュール・外部 CLI と、それらの親ディレクトリは root 所有で、グループ・その他のユーザーによる書き込みが禁止されている必要があります。Ubuntu の標準インストーラーは site ライブラリのディレクトリをグループ書き込み可能にするため、上のコマンドで明示的に禁止します。この設定は、その Perl の site ライブラリ全体に適用されます。Worker 用には管理者が専有するシステム Perl を使い、ユーザー所有の `local::lib` を使用しないでください。
+専用領域の CLI は、その領域と Perl のコアライブラリからモジュールを読み込みます。共有の site／vendor ライブラリは使わず、`PERL5LIB` の設定も不要です。Worker は専用領域とその親ディレクトリ、読み込むコード、外部 CLI が root 所有で、グループ・その他のユーザーによる書き込みを許可していないことを検査します。専用領域内のシンボリックリンクは使えません。ユーザー所有の領域を Worker の起動に使わないでください。
 
 ### GitHub 版
 
@@ -73,33 +77,22 @@ sudo sh -c 'umask 0022; PERL_CARTON_MIRROR=https://cpan.metacpan.org /usr/bin/ca
 sudo chown -R root:root "$outcrop_source"
 sudo chmod -R go-w "$outcrop_source"
 outcrop_units_dir="$outcrop_source/systemd"
-```
-
-GitHub 版では、サービスに配置先と Carton 経由の起動を指定します。
-
-```sh
-sudo mkdir -p /etc/systemd/system/outcrop-worker.service.d /etc/systemd/system/outcrop-web.service.d
-sudo tee /etc/systemd/system/outcrop-worker.service.d/source.conf >/dev/null <<EOF_WORKER
-[Service]
-WorkingDirectory=$outcrop_source
-ExecStart=
-ExecStart=/usr/bin/carton exec /usr/bin/perl script/outcrop worker
-EOF_WORKER
-sudo tee /etc/systemd/system/outcrop-web.service.d/source.conf >/dev/null <<EOF_WEB
-[Service]
-WorkingDirectory=$outcrop_source
-ExecStart=
-ExecStart=/usr/bin/carton exec /usr/bin/perl script/outcrop web
-EOF_WEB
+outcrop_exec="/usr/bin/carton exec /usr/bin/perl script/outcrop"
+outcrop_working_dir="$outcrop_source"
 ```
 
 ### systemd で起動
 
-選んだ方式の `outcrop_units_dir` を設定したシェルで実行します。CPAN 版のサービス定義は `/usr/local/bin/outcrop` を使います。インストール先が異なる場合は `ExecStart` を実際のパスに変更してください。GitHub 版から CPAN 版へ切り替える場合は、先に上記の `source.conf` を両サービスから削除します。
+選んだ方式の変数を設定したシェルで実行します。サービス定義の `ExecStart` と `WorkingDirectory` に実際のインストール先を反映します。配置先には空白や systemd の特殊文字を含まないパスを使ってください。以前の手順で `source.conf` を作成している場合は、両サービスの `.service.d` ディレクトリから削除してから切り替えます。
 
 ```sh
 sudo useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin outcrop
-sudo cp "$outcrop_units_dir/outcrop-worker.service" "$outcrop_units_dir/outcrop-web.service" /etc/systemd/system/
+for mode in worker web; do
+  sed -e "s|^ExecStart=.*|ExecStart=$outcrop_exec $mode|" \
+      -e "s|^WorkingDirectory=.*|WorkingDirectory=$outcrop_working_dir|" \
+      "$outcrop_units_dir/outcrop-$mode.service" | \
+    sudo tee "/etc/systemd/system/outcrop-$mode.service" >/dev/null
+done
 sudo systemctl daemon-reload
 sudo systemctl enable --now outcrop-worker.service outcrop-web.service
 sudo systemctl --no-pager --full status outcrop-worker.service outcrop-web.service
@@ -109,14 +102,29 @@ sudo systemctl --no-pager --full status outcrop-worker.service outcrop-web.servi
 
 ```sh
 sudo install -d -o outcrop -g outcrop -m 0750 /run/outcrop-web
-sudo outcrop worker
+sudo "$outcrop_prefix/bin/outcrop" worker
 # 別のターミナルで実行
-sudo -u outcrop outcrop web
+sudo -u outcrop "$outcrop_prefix/bin/outcrop" web
 ```
 
 ## 利用と制約
 
-`http://<実行ホストの IP アドレスまたはホスト名>:8080` を開きます。既定では `0.0.0.0:8080` で待ち受けます。認証機能はないため、ファイアウォールなどで信頼できる端末からの接続に制限してください。待受先は Web の環境変数 `OUTCROP_LISTEN` で指定できます。
+実行ホストの [http://127.0.0.1:8080](http://127.0.0.1:8080) を開きます。既定では localhost からの接続だけを受け付けます。別の端末からは SSH ポート転送を使うか、LAN 公開が必要な場合だけ Web の待受先を明示してください。
+
+```sh
+sudo systemctl edit outcrop-web.service
+```
+
+```ini
+[Service]
+Environment=OUTCROP_LISTEN=http://0.0.0.0:8080
+```
+
+```sh
+sudo systemctl restart outcrop-web.service
+```
+
+LAN 公開した場合は `http://<実行ホストの IP アドレスまたはホスト名>:8080` を開きます。認証機能はないため、ファイアウォールなどで信頼できる端末からの接続に制限してください。
 
 自動マウントしない専用 VM に独立した複製を接続し、一覧からディスクを選んでスキャンします。取り外す前にアンマウントを確認してください。実行ホスト自身のスキャンでは、仮想ファイルシステム・別マウント・Outcrop の保存先を除外します。
 
@@ -152,7 +160,7 @@ sudo systemctl restart outcrop-worker.service
 sudo systemctl stop outcrop-web.service outcrop-worker.service
 ```
 
-CPAN 版は、インストール節の手順で新しい配布アーカイブまたは CPAN 上のバージョンをインストールし、site ライブラリのディレクトリ権限を再設定します。
+CPAN 版は、インストール節の手順で同じ専用領域へ新しい配布アーカイブまたは CPAN 上のバージョンをインストールし、その領域の所有者・権限を再設定します。
 
 GitHub 版は配置先で更新し、所有者・権限を整えます。
 
@@ -167,7 +175,7 @@ chmod -R go-w .
 SH
 ```
 
-サービス定義の変更がある場合は、インストール時と同様にコピーしてから起動します。`Root must own ... and deny group/other writes` が出る場合は、表示されたパスと親ディレクトリの所有者・権限を確認してください。
+サービス定義の変更がある場合は、インストール時と同じ変数と手順で実際の起動パスを反映してから起動します。`Root must own ... and deny group/other writes` が出る場合は、表示されたパスと親ディレクトリの所有者・権限を確認してください。
 
 ```sh
 sudo systemctl daemon-reload

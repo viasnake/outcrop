@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=outcrop
+WorkingDirectory=/
 ExecStart=/usr/local/bin/outcrop worker
 Environment=OUTCROP_WORKER_JOBS=2
 UMask=0027

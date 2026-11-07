@@ -7,6 +7,7 @@ Wants=outcrop-worker.service
 Type=forking
 User=outcrop
 Group=outcrop
+WorkingDirectory=/
 RuntimeDirectory=outcrop-web
 RuntimeDirectoryMode=0750
 PIDFile=/run/outcrop-web/hypnotoad.pid

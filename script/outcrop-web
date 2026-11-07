@@ -1,17 +1,18 @@
 #!/usr/bin/perl
+BEGIN { die "Web must run as an unprivileged user\n" unless $> }
+
 use strict;
 use warnings;
 
 use FindBin;
 use lib -f "$FindBin::Bin/../lib/App/Outcrop.pm" ? ("$FindBin::Bin/../lib") : ();
-use App::Outcrop;
 
-die "Web must run as an unprivileged user\n" unless $>;
+use App::Outcrop;
 
 my $app = App::Outcrop->new(mode => 'production');
 $app->config(
     hypnotoad => {
-        listen   => [$ENV{OUTCROP_LISTEN} // 'http://0.0.0.0:8080'],
+        listen   => [$ENV{OUTCROP_LISTEN} // 'http://127.0.0.1:8080'],
         workers  => 2,
         pid_file => $ENV{OUTCROP_WEB_PID_FILE} // '/run/outcrop-web/hypnotoad.pid',
     }
