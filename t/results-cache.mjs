@@ -8,7 +8,8 @@ import {chromium} from 'playwright';
 
 // Use real IndexedDB transactions, Blob persistence and worker lifetimes.
 // An in-memory API mock cannot establish rollback or reopen behavior.
-const scripts = new Map(await Promise.all(['result-cache.js', 'results-worker.js', 'results.js'].map(async name => [name, await readFile(`public/${name}`)])));
+const scripts = new Map(await Promise.all(['i18n.js', 'result-cache.js', 'results-worker.js', 'results.js'].map(async name => [name, await readFile(`public/${name}`)])));
+const catalogs = Object.fromEntries(await Promise.all(['ja', 'en'].map(async locale => [locale, JSON.parse(await readFile(`public/locales/${locale}.json`, 'utf8'))])));
 const requests = [];
 let pending = 0;
 let generation = 0;
@@ -48,12 +49,14 @@ const server = createServer((request, response) => {
   }
   if (url.pathname === '/ui' || url.pathname === '/build-ui') {
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
-    response.end(`<html><body><textarea id="draft"></textarea>${['packages', 'matches'].map(kind => `
+    const locale = url.searchParams.get('lang') === 'en' ? 'en' : 'ja';
+    const messages = JSON.stringify(catalogs[locale]).replaceAll('&', '&amp;').replaceAll('\"', '&quot;').replaceAll('<', '&lt;');
+    response.end(`<html lang="${locale}"><body><textarea id="draft"></textarea>${['packages', 'matches'].map(kind => `
       <section data-result-table="${kind}" data-source="${url.pathname === '/build-ui' && kind === 'matches' ? '' : `/scans/a/results/${kind}?version=v1`}">
         <input data-result-search disabled><span data-result-count></span><p data-result-status>読み込み中…</p>
         <div data-result-viewport style="height:572px;overflow:auto" hidden><table><thead><tr>${[0,1,2,3,4].map(column => `<th><button data-sort="${column}" disabled>Sort<span data-sort-indicator></span></button></th>`).join('')}</tr></thead><tbody></tbody></table></div>
         <nav data-result-pager hidden><button data-page-step="-1">前へ</button><span data-page-range></span><button data-page-step="1">次へ</button></nav>
-      </section>`).join('')}${url.pathname === '/build-ui' ? '<details><summary>その他の操作</summary><form action="/scans/a/results/matches/rebuild" data-result-build="matches"><button>一覧を作成</button><span data-build-message></span><progress data-build-progress hidden></progress></form></details>' : ''}<span data-cache-status hidden></span><button data-clear-cache disabled>Clear</button><script src="/results.js"></script></body></html>`);
+      </section>`).join('')}${url.pathname === '/build-ui' ? '<details><summary>その他の操作</summary><form action="/scans/a/results/matches/rebuild" data-result-build="matches"><button>一覧を作成</button><span data-build-message></span><progress data-build-progress hidden></progress></form></details>' : ''}<span data-cache-status hidden></span><button data-clear-cache disabled>Clear</button><script src="/i18n.js" data-messages="${messages}"></script><script src="/results.js"></script></body></html>`);
     return;
   }
   response.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -190,6 +193,30 @@ try {
     assert.equal(requests.length, beforeReload + 2, 'cleared results fetched independently');
     assert.deepEqual(failures, []);
     assert(requests.every(url => !url.includes('/download/')), 'raw JSON never requested');
+  });
+  await test('English counts, search and cache messages reuse pages saved in Japanese', async () => {
+    const before = requests.length;
+    await page.goto(`${origin}/ui?lang=en`);
+    await page.waitForFunction(() => [...document.querySelectorAll('[data-result-count]')].every(node => node.textContent === '12,050 results'));
+    await page.waitForFunction(() => !document.querySelector('[data-clear-cache]').disabled);
+    assert.equal(requests.length, before, 'language changes reuse the same result cache');
+    const matches = page.locator('[data-result-table="matches"]');
+    await matches.locator('[data-result-search]').fill('target');
+    await page.waitForFunction(() => document.querySelector('[data-result-table="matches"] [data-result-count]').textContent === '1 / 12,050 results');
+    await page.locator('[data-clear-cache]').click();
+    await page.waitForFunction(() => document.querySelector('[data-cache-status]').textContent === 'Cache cleared.');
+  });
+  await test('worker validation errors use the page language in both locales', async () => {
+    for (const locale of ['ja', 'en']) {
+      const isolated = await context.browser().newContext();
+      await isolated.route('**/scans/a/results/*?**', route => route.fulfill({
+        contentType: 'application/json', body: JSON.stringify({revision: 'wrong'}),
+      }));
+      const tab = await isolated.newPage();
+      await tab.goto(`${origin}/ui?lang=${locale}`);
+      await tab.waitForFunction(message => [...document.querySelectorAll('[data-result-status]')].every(node => node.textContent === message), catalogs[locale].result_format_invalid);
+      await isolated.close();
+    }
   });
   await test('one kind failing to save does not redownload or evict its sibling', async () => {
     const isolated = await context.browser().newContext();

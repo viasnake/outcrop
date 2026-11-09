@@ -1,6 +1,6 @@
 % layout 'default';
-% title 'スキャン — Outcrop';
-<h1 class="mb-6 text-2xl font-semibold tracking-tight wrap-anywhere sm:text-3xl">スキャン</h1>
+% title l('scan') . ' — Outcrop';
+<h1 class="mb-6 text-2xl font-semibold tracking-tight wrap-anywhere sm:text-3xl"><%= l('scan') %></h1>
 
 <p class="text-sm text-slate-600" role="status" data-inventory-status></p>
 <form method="post" action="/scans" data-submit-once data-scan-form>
@@ -11,28 +11,24 @@
     </div>
 
 <section class="my-6 min-w-0 rounded-lg border border-slate-200 bg-white p-4 sm:p-6" data-tag-input>
-    <h2 class="mb-5 text-lg font-semibold">タグ</h2>
+    <h2 class="mb-5 text-lg font-semibold"><%= l('tags') %></h2>
     <div class="flex flex-wrap gap-1.5 not-empty:mb-4" data-initial-tags></div>
     <div class="flex flex-wrap items-end gap-3 [&>label]:min-w-0 [&>label]:grow">
-        <label class="text-sm" for="new-tag"><span class="sr-only">タグ</span>
-            <input class="mt-1 block w-full min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100" id="new-tag" name="new_tag" maxlength="120" placeholder="タグを入力">
+        <label class="text-sm" for="new-tag"><span class="sr-only"><%= l('tags') %></span>
+            <input class="mt-1 block w-full min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100" id="new-tag" name="new_tag" maxlength="120" placeholder="<%= l('enter_tag') %>">
         </label>
-        <button type="button" class="inline-flex min-h-10 items-center justify-center rounded-md border px-4 py-2 font-medium cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-slate-300 bg-white text-slate-700 enabled:hover:bg-slate-100" data-add-tag>追加</button>
+        <button type="button" class="inline-flex min-h-10 items-center justify-center rounded-md border px-4 py-2 font-medium cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-slate-300 bg-white text-slate-700 enabled:hover:bg-slate-100" data-add-tag><%= l('add') %></button>
     </div>
     <span class="mt-2 block text-xs text-slate-600" role="status" data-tag-input-status></span>
 </section>
 
 <section class="my-6 min-w-0 rounded-lg border border-slate-200 bg-white p-4 sm:p-6">
-    <h2 class="mb-5 text-lg font-semibold">メモ</h2>
-    <label class="sr-only" for="new-note">スキャンのメモ</label>
+    <h2 class="mb-5 text-lg font-semibold"><%= l('notes') %></h2>
+    <label class="sr-only" for="new-note"><%= l('scan_notes') %></label>
     <textarea class="mt-1 block w-full min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100" id="new-note" name="note" rows="4" maxlength="2000"></textarea>
 </section>
 <div class="my-6">
-        <label class="mb-4 flex items-start gap-2" data-clone-confirmation>
-            <input class="mt-1.5 size-4 shrink-0 accent-blue-700" type="checkbox" name="clone" value="yes">
-            元のディスクから独立したクローンディスクであることを確認しました
-        </label>
-        <button class="inline-flex min-h-10 items-center justify-center rounded-md border px-4 py-2 font-medium cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-blue-700 bg-blue-700 text-white enabled:hover:bg-blue-800" type="submit" <%= $inventory->{stale} || @{$inventory->{blocked} // []} ? 'disabled' : '' %>>スキャン開始</button>
+        <button class="inline-flex min-h-10 items-center justify-center rounded-md border px-4 py-2 font-medium cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 border-blue-700 bg-blue-700 text-white enabled:hover:bg-blue-800" type="submit" <%= $inventory->{stale} || @{$inventory->{blocked} // []} ? 'disabled' : '' %>><%= l('start_scan') %></button>
 </div>
 <p class="my-4 text-sm" role="status" data-scan-status></p>
 </form>

@@ -1,10 +1,10 @@
-package Outcrop::Worker;
+package App::Outcrop::Worker;
 use Mojo::Base -base;
 use Mojo::File qw(path);
 use Mojo::JSON qw(from_json);
 use Fcntl      qw(:flock O_CREAT O_RDWR O_NOFOLLOW F_SETFD);
 use Cwd        qw(abs_path);
-use Outcrop::Store;
+use App::Outcrop::Store;
 use POSIX       qw(WNOHANG);
 use Time::HiRes qw(sleep time);
 
@@ -57,6 +57,12 @@ sub _verify_runtime_code {
         next unless "$file" =~ m{/(?:lib|script)/} || "$file" =~ /\.pm\z/;
         $self->trusted_path($file);
     }
+
+    # Installed dependencies can live outside the application tree. Check
+    # loaded modules and their search directories as well as the entry point.
+    $self->trusted_path($0);
+    $self->trusted_path($_) for grep { !ref($_) && -d $_ } @INC;
+    $self->trusted_path($_) for grep { !ref($_) && -f $_ } values %INC;
     for my $executable ($self->config->syft, $self->config->grype) {
         $self->trusted_path($executable);
     }
@@ -211,7 +217,7 @@ sub _recover_scan {
     elsif ($scan->{cleanup_status} ne 'not_needed') {
         $scan->{cleanup_status} = 'unmounted';
     }
-    $scan->{finished_at} //= Outcrop::Store::now();
+    $scan->{finished_at} //= App::Outcrop::Store::now();
     $scan->{phase} = 'finished';
     $self->store->save($scan);
 }
@@ -371,7 +377,7 @@ sub _reconcile_job {
         $scan->{status}      = 'failed';
         $scan->{phase}       = 'finished';
         $scan->{error}       = 'Scan process exited before recording its start';
-        $scan->{finished_at} = Outcrop::Store::now();
+        $scan->{finished_at} = App::Outcrop::Store::now();
         $self->store->save($scan);
     }
 

@@ -1,4 +1,4 @@
-package Outcrop::Disk;
+package App::Outcrop::Disk;
 use Mojo::Base -base;
 use Mojo::JSON  qw(decode_json);
 use Mojo::File  qw(path);
@@ -6,14 +6,14 @@ use Digest::SHA qw(sha256_hex);
 use JSON::PP    ();
 use Cwd         qw(abs_path);
 use Fcntl       qw(O_RDONLY O_NONBLOCK);
-use Outcrop::Command;
+use App::Outcrop::Command;
 
 # Linux amd64: _IOR(0x12, 128, __u64), available since Linux 5.15.
 use constant BLKGETDISKSEQ            => 0x80081280;
 use constant BIOS_BOOT_PARTITION_TYPE => '21686148-6449-6e6f-744e-656564454649';
 
 has 'config';
-has command    => sub { Outcrop::Command->new };
+has command    => sub { App::Outcrop::Command->new };
 has app_root   => sub { abs_path('.') };
 has sysfs_root => '/sys/dev/block';
 

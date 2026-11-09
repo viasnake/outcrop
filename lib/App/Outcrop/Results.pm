@@ -1,4 +1,4 @@
-package Outcrop::Results;
+package App::Outcrop::Results;
 use Mojo::Base -base;
 use utf8;
 use feature 'fc';
@@ -7,7 +7,7 @@ use Digest::SHA;
 use Fcntl      qw(:flock);
 use Mojo::File qw(path);
 use Mojo::JSON qw(encode_json decode_json);
-use Outcrop::ResultStream;
+use App::Outcrop::ResultStream;
 
 has 'config';
 
@@ -176,7 +176,7 @@ sub build {
         my $rows_digest   = Digest::SHA->new(256);
         my %severity =
             (Critical => 0, High => 1, Medium => 2, Low => 3, Negligible => 4, Unknown => 5);
-        my $envelope = Outcrop::ResultStream->read(
+        my $envelope = App::Outcrop::ResultStream->read(
             $source, $kind,
             sub {
                 my $row = $self->row($kind, $_[0]);

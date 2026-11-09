@@ -5,10 +5,10 @@ use File::Temp qw(tempdir);
 use Mojo::File qw(path);
 use Mojo::JSON qw(decode_json);
 use lib 'lib';
-use Outcrop::Scan;
-use Outcrop::Command;
+use App::Outcrop::Scan;
+use App::Outcrop::Command;
 
-my $scanner  = Outcrop::Scan->new;
+my $scanner  = App::Outcrop::Scan->new;
 my @excluded = qw(var/log var/crash var/lib/systemd/coredump);
 my @retained = qw(
     var/lib/dpkg var/lib/rpm usr/lib/sysimage/rpm usr/share/rpm
@@ -160,7 +160,7 @@ subtest 'Real Syft excludes logs while retaining software evidence' => sub {
     my $syft = $ENV{OUTCROP_TEST_SYFT};
     plan skip_all => 'Set OUTCROP_TEST_SYFT to an absolute Syft executable' unless $syft;
     die 'OUTCROP_TEST_SYFT must be an absolute executable' unless $syft =~ m{\A/} && -x $syft;
-    my $command = Outcrop::Command->new;
+    my $command = App::Outcrop::Command->new;
     my $work    = path(tempdir(CLEANUP => 1));
     $work->child('tools.yaml')->spurt("{}\n");
     for my $release (@releases) {

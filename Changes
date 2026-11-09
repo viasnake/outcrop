@@ -1,0 +1,9 @@
+Revision history for App-Outcrop
+
+0.01
+    - Support Japanese and English UI with a saved browser language preference.
+    - Package Outcrop as App::Outcrop with the outcrop web and worker commands.
+    - Install web assets and systemd examples alongside the application modules.
+    - Support CPAN installation and the existing GitHub/Carton workflow.
+    - Isolate dedicated-prefix dependencies from shared Perl libraries.
+    - Listen on localhost unless OUTCROP_LISTEN explicitly enables remote access.

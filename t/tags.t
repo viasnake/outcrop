@@ -7,27 +7,30 @@ use Mojo::JSON qw(encode_json);
 use DBI;
 use IO::Select;
 use lib 'lib';
-use Outcrop::Config;
-use Outcrop::Store;
-use Outcrop::Tags;
-use Outcrop::Annotations;
-use Outcrop::Scan;
+use App::Outcrop::Config;
+use App::Outcrop::Store;
+use App::Outcrop::Tags;
+use App::Outcrop::Annotations;
+use App::Outcrop::Scan;
 
 is_deeply(
-    Outcrop::Tags->validate([' production', '日本語', 'web', 'production', '', ' ']),
+    App::Outcrop::Tags->validate([' production', '日本語', 'web', 'production', '', ' ']),
     ['production', '日本語', 'web'],
     'Whitespace, blanks, and duplicate tags are normalized'
 );
-is_deeply(Outcrop::Tags->validate([]), [], 'Tags are optional');
+is_deeply(App::Outcrop::Tags->validate([]), [], 'Tags are optional');
 for my $invalid ([{}], [undef], ["bad\nvalue"], ['x' x 121], [('tag') x 21]) {
-    ok(!eval { Outcrop::Tags->validate($invalid); 1 }, 'Malformed or excessive tags are rejected');
+    ok(
+        !eval { App::Outcrop::Tags->validate($invalid); 1 },
+        'Malformed or excessive tags are rejected'
+    );
 }
 my $input = [' padded '];
-Outcrop::Tags->validate($input);
+App::Outcrop::Tags->validate($input);
 is_deeply($input, [' padded '], 'Validation does not mutate its input');
 
 my $root   = tempdir(CLEANUP => 1);
-my $config = Outcrop::Config->new(state => $root);
+my $config = App::Outcrop::Config->new(state => $root);
 
 # Reproduce the old schema so migration is tested against real SQLite data.
 my $database = DBI->connect("dbi:SQLite:dbname=$root/outcrop.sqlite",
@@ -50,7 +53,7 @@ $database->do(
     @$old{qw(id asset created_at status phase cleanup_status)}, encode_json($old)
 );
 $database->disconnect;
-my $store = Outcrop::Store->new(config => $config, writable => 1);
+my $store = App::Outcrop::Store->new(config => $config, writable => 1);
 $store->initialize;
 $store->initialize;
 is_deeply($store->get($id)->{tags},
@@ -59,7 +62,7 @@ ok(!exists($store->get($id)->{asset}), 'The obsolete asset field is removed');
 is(scalar(@{$store->history('legacy 日本語')}), 1, 'Migrated tags are searchable');
 
 $store->annotations->change_tags($id, ['legacy 日本語'], 'add', ['production']);
-my $other_tab = Outcrop::Annotations->new(config => $config);
+my $other_tab = App::Outcrop::Annotations->new(config => $config);
 $other_tab->change_tags($id, ['legacy 日本語'], 'add', ['日本語']);
 is_deeply(
     $store->get($id)->{tags},
@@ -108,7 +111,7 @@ for my $note (['invalid'], 'x' x 2001, "bad\x00note") {
 
 # A read-only scan connection must still allow annotations through their
 # separate database, without making the original scan record writable.
-my $reader = Outcrop::Store->new(config => $config);
+my $reader = App::Outcrop::Store->new(config => $config);
 ok(
     !eval {
         $reader->db->do('UPDATE scans SET status = ?', undef, 'corrupted');
@@ -141,13 +144,13 @@ if (!$child) {
     my $program = <<'PERL';
 use strict;
 use warnings;
-use Outcrop::Config;
-use Outcrop::Annotations;
+use App::Outcrop::Config;
+use App::Outcrop::Annotations;
 $| = 1;
 print "ready\n";
-my $config = Outcrop::Config->new(state => $ARGV[0]);
+my $config = App::Outcrop::Config->new(state => $ARGV[0]);
 my $succeeded = eval {
-    Outcrop::Annotations->new(config => $config)->change_tags($ARGV[1], [], 'add', ['second-writer']);
+    App::Outcrop::Annotations->new(config => $config)->change_tags($ARGV[1], [], 'add', ['second-writer']);
     1;
 };
 print $succeeded ? "saved\n" : "failed: $@\n";
@@ -175,7 +178,7 @@ is_deeply(
     'Overlapping transactions preserve both writers rather than losing an edit'
 );
 
-my $scanner = Outcrop::Scan->new(store => $store);
+my $scanner = App::Outcrop::Scan->new(store => $store);
 my $request = $scanner->validate_request(
     {id => 'b' x 32, token => 'f' x 64, note => '', command => '/evil', tags => []});
 is_deeply($request->{tags}, [], 'Scan requests accept no tags');

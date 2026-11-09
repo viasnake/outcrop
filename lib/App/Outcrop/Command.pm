@@ -1,4 +1,4 @@
-package Outcrop::Command;
+package App::Outcrop::Command;
 use Mojo::Base -base;
 
 use Fcntl       qw(F_GETFL F_SETFL O_NONBLOCK);

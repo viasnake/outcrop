@@ -7,10 +7,10 @@ use Mojo::File qw(path);
 use Minion;
 use Time::HiRes qw(sleep);
 use lib 'lib';
-use Outcrop::Config;
-use Outcrop::Store;
-use Outcrop::Scan;
-use Outcrop::Worker;
+use App::Outcrop::Config;
+use App::Outcrop::Store;
+use App::Outcrop::Scan;
+use App::Outcrop::Worker;
 
 # Recovery uses a real Minion queue and a recorded mount table, without any
 # privileged directory setup or block-device access.
@@ -23,7 +23,7 @@ use Outcrop::Worker;
     sub inventory   { return {updated_at => time, disks => [], errors => []} }
 
     package WorkerScan;
-    use Mojo::Base 'Outcrop::Scan';
+    use Mojo::Base 'App::Outcrop::Scan';
 
     sub run {
         my ($self, $request) = @_;
@@ -37,14 +37,14 @@ use Outcrop::Worker;
 }
 my $dir = tempdir(CLEANUP => 1);
 path($dir, 'queue')->make_path;
-my $config = Outcrop::Config->new(state => $dir, runtime => "$dir/run");
+my $config = App::Outcrop::Config->new(state => $dir, runtime => "$dir/run");
 path($config->runtime)->make_path;
 
 # A surviving exec child must keep a second worker out after its parent
 # closes the lock; releasing only the parent's descriptor is insufficient.
 {
-    my $first  = Outcrop::Worker->new(config => $config);
-    my $second = Outcrop::Worker->new(config => $config);
+    my $first  = App::Outcrop::Worker->new(config => $config);
+    my $second = App::Outcrop::Worker->new(config => $config);
     $first->acquire_lock;
     eval { $second->acquire_lock };
     like($@, qr/already running/, 'A second worker cannot acquire the disk-operation lock');
@@ -74,7 +74,7 @@ PERL
     waitpid $child, 0;
     ok(eval { $second->acquire_lock; 1 }, 'Lock releases only after the surviving child exits');
 }
-my $store = Outcrop::Store->new(config => $config, writable => 1);
+my $store = App::Outcrop::Store->new(config => $config, writable => 1);
 $store->initialize;
 my $minion = Minion->new(SQLite => $config->queue);
 $minion->add_task(scan => sub { die 'Must not replay interrupted task' });
@@ -93,7 +93,7 @@ my $active        = $minion_worker->dequeue(0, {tasks => ['scan']});
 ok($active, 'Real Minion job was active at simulated shutdown');
 my $mount  = $config->mounts . '/' . $old->{id};
 my $disk   = RecoveryDisk->new(mounts => [{target => $mount, source => '/dev/example1'}]);
-my $worker = Outcrop::Worker->new(
+my $worker = App::Outcrop::Worker->new(
     config  => $config,
     store   => $store,
     disk    => $disk,

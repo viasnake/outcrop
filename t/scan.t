@@ -6,9 +6,9 @@ use File::Temp  qw(tempdir);
 use Mojo::File  qw(path);
 use Mojo::JSON  qw(encode_json);
 use lib 'lib';
-use Outcrop::Config;
-use Outcrop::Store;
-use Outcrop::Scan;
+use App::Outcrop::Config;
+use App::Outcrop::Store;
+use App::Outcrop::Scan;
 
 # These two local fixtures exercise real scan orchestration using ordinary
 # temporary directories; no block device or external scanner is involved.
@@ -165,15 +165,19 @@ my $sequence = 0;
 sub scan_case {
     my ($failure, $kind) = @_;
     my $directory = tempdir(CLEANUP => 1);
-    my $config    = Outcrop::Config->new(state => $directory, runtime => "$directory/run");
-    my $store     = Outcrop::Store->new(config => $config, writable => 1);
+    my $config    = App::Outcrop::Config->new(state => $directory, runtime => "$directory/run");
+    my $store     = App::Outcrop::Store->new(config => $config, writable => 1);
     $store->initialize;
     my $events     = [];
     my $disk_class = ($kind // '') eq 'host' ? 'HostScanDisk' : 'ScanDisk';
     my $disk       = $disk_class->new(failure => $failure, events => $events);
     my $tools      = ScanTools->new(failure => $failure, events => $events);
-    my $scanner =
-        Outcrop::Scan->new(config => $config, store => $store, disk => $disk, command => $tools);
+    my $scanner    = App::Outcrop::Scan->new(
+        config  => $config,
+        store   => $store,
+        disk    => $disk,
+        command => $tools
+    );
     my $id   = sprintf('%032x', ++$sequence);
     my $scan = $scanner->run({id => $id, tags => ['sample'], note => '', token => ('a' x 64)});
     return ($scan, $store, $events, $directory, $tools);
@@ -213,7 +217,7 @@ for my $failure (qw(identity readonly options mount syft)) {
 # Completed scans publish private indexes before exposing completion.
 {
     my ($scan, $store) = scan_case('');
-    my $results = Outcrop::Results->new(config => $store->config);
+    my $results = App::Outcrop::Results->new(config => $store->config);
     for my $kind (qw(syft grype)) {
         my $file = $results->published_location($scan->{id}, $kind);
         ok($results->ready($file, $results->revision($store->artifact($scan->{id}, $kind))),
@@ -223,8 +227,8 @@ for my $failure (qw(identity readonly options mount syft)) {
 }
 {
     no warnings 'redefine';
-    my $build = Outcrop::Results->can('build');
-    local *Outcrop::Results::build = sub {
+    my $build = App::Outcrop::Results->can('build');
+    local *App::Outcrop::Results::build = sub {
         die 'Injected index failure' if $_[3] eq 'grype';
         return $build->(@_);
     };
@@ -306,10 +310,10 @@ for my $scope ('separate-filesystems', 'missing-scope') {
 
 # A stop signal caught by a best-effort scope check must still stop the scan.
 {
-    my $guest_path = Outcrop::Scan->can('guest_path');
+    my $guest_path = App::Outcrop::Scan->can('guest_path');
     my $signalled  = 0;
     no warnings 'redefine';
-    local *Outcrop::Scan::guest_path = sub {
+    local *App::Outcrop::Scan::guest_path = sub {
         kill 'TERM', $$ unless $signalled++;
         return $guest_path->(@_);
     };
@@ -353,7 +357,7 @@ for my $kind ('clone', 'host') {
     symlink '/usr/os-release', "$root/etc/os-release" or die $!;
     path($root, 'etc/fstab')
         ->spurt("UUID=root / ext4 defaults 0 1\nUUID=var /var ext4 defaults 0 2\n");
-    my $scanner = Outcrop::Scan->new;
+    my $scanner = App::Outcrop::Scan->new;
     is(
         "" . $scanner->guest_path($root, 'etc/os-release'),
         "$root/usr/os-release",
@@ -388,8 +392,8 @@ for my $failure ('', 'syft', 'grype', 'stop') {
 # exits; distinct disks remain independent.
 {
     my $dir     = tempdir(CLEANUP => 1);
-    my $config  = Outcrop::Config->new(state => $dir, runtime => "$dir/run");
-    my $scanner = Outcrop::Scan->new(config => $config);
+    my $config  = App::Outcrop::Config->new(state => $dir, runtime => "$dir/run");
+    my $scanner = App::Outcrop::Scan->new(config => $config);
     my $lock    = $scanner->_acquire_lock('disk-fixture');
     my $pid     = fork;
     die "fork: $!" unless defined $pid;
@@ -408,7 +412,7 @@ for my $failure ('', 'syft', 'grype', 'stop') {
 
 {
     my ($completed, $store) = scan_case('');
-    my $scanner = Outcrop::Scan->new(config => $store->config, store => $store);
+    my $scanner = App::Outcrop::Scan->new(config => $store->config, store => $store);
     eval { $scanner->run({id => $completed->{id}, token => 'b' x 64, tags => ['duplicate']}) };
     like($@, qr/already been processed/, 'Duplicate scan ID cannot start again');
     is_deeply($store->get($completed->{id}),

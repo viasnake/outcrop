@@ -1,17 +1,17 @@
-package Outcrop::Scan;
+package App::Outcrop::Scan;
 use Mojo::Base -base;
 use Mojo::File qw(path);
 use Mojo::JSON qw(decode_json);
 use Digest::SHA;
 use Fcntl qw(:flock F_SETFD);
-use Outcrop::Command;
-use Outcrop::Store;
-use Outcrop::Tags;
-use Outcrop::Results;
+use App::Outcrop::Command;
+use App::Outcrop::Store;
+use App::Outcrop::Tags;
+use App::Outcrop::Results;
 
 has [qw(config store disk)];
 has cache_slot => 1;
-has command    => sub { Outcrop::Command->new };
+has command    => sub { App::Outcrop::Command->new };
 
 sub validate_request {
     my ($self, $request) = @_;
@@ -20,7 +20,7 @@ sub validate_request {
     die 'Invalid scan request' unless $self->store->valid_id($request->{id});
     die 'Invalid scan request' unless ($request->{token} // '') =~ /\A[0-9a-f]{64}\z/;
 
-    my $tags = Outcrop::Tags->validate($request->{tags} // []);
+    my $tags = App::Outcrop::Tags->validate($request->{tags} // []);
 
     my $note = $request->{note};
     die 'Invalid scan request' if ref $note;
@@ -36,7 +36,7 @@ sub queued {
     $request = $self->validate_request($request);
     return {
         %$request,
-        created_at     => Outcrop::Store::now(),
+        created_at     => App::Outcrop::Store::now(),
         status         => 'queued',
         phase          => 'queued',
         cleanup_status => 'not_needed',
@@ -178,8 +178,8 @@ sub exclusions {
 sub valid_artifact {
     my ($self, $file, $kind) = @_;
 
-    require Outcrop::ResultStream;
-    my $data = Outcrop::ResultStream->read($file, $kind);
+    require App::Outcrop::ResultStream;
+    my $data = App::Outcrop::ResultStream->read($file, $kind);
     die "Invalid $kind JSON" unless ref $data eq 'HASH';
 
     # Validate the envelope before publishing or using an output as another
@@ -325,7 +325,7 @@ sub run {
         $scan->{status} = 'partial';
     }
     $self->_append_log_warnings($scan);
-    $scan->{finished_at} = Outcrop::Store::now();
+    $scan->{finished_at} = App::Outcrop::Store::now();
     $scan->{phase}       = 'finished';
     $self->store->save($scan);
     return $scan;
@@ -334,7 +334,7 @@ sub run {
 sub _index_results {
     my ($self, $scan, $cancelled) = @_;
     $self->phase($scan, 'results');
-    my $results = Outcrop::Results->new(config => $self->config);
+    my $results = App::Outcrop::Results->new(config => $self->config);
     for my $kind (qw(syft grype)) {
         my $source = $self->store->artifact($scan->{id}, $kind);
         next unless $source;
@@ -379,7 +379,7 @@ sub _start_scan {
         $scan->{$field} = $request->{$field};
     }
     $scan->{status}     = 'running';
-    $scan->{started_at} = Outcrop::Store::now();
+    $scan->{started_at} = App::Outcrop::Store::now();
     return $self->store->save($scan);
 }
 

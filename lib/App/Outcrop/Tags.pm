@@ -1,4 +1,4 @@
-package Outcrop::Tags;
+package App::Outcrop::Tags;
 use strict;
 use warnings;
 

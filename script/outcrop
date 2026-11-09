@@ -1,52 +1,140 @@
 #!/usr/bin/perl
+
+BEGIN {
+    my @inherited_inc = @INC;
+
+    # Discover the interpreter's core paths without executing a writable
+    # Config.pm (or its imports) from a shared site library.
+    {
+        local @INC = (
+            sub {
+                my (undef, $module) = @_;
+                for my $directory (grep { !ref($_) } @inherited_inc) {
+                    my $file = "$directory/$module";
+                    next unless -f $file && open(my $source, '<', $file);
+                    my @stat = stat $source;
+                    next
+                        unless @stat
+                        && ($stat[4] == 0 || $stat[4] == $>)
+                        && !($stat[2] & 0022);
+                    $INC{$module} = $file;
+                    return $source;
+                }
+                return;
+            }
+        );
+        require Config;
+    }
+
+    @INC = @Config::Config{qw(archlibexp privlibexp)};
+    require FindBin;
+    require lib;
+    my $library = "$FindBin::RealBin/../lib/perl5";
+    if (-f "$library/App/Outcrop.pm") {
+        if ($> == 0) {
+            require Cwd;
+            require File::Find;
+            require File::Spec;
+            my $verify = sub {
+                my ($file) = @_;
+                my $resolved = Cwd::abs_path($file) or die "Missing trusted path: $file\n";
+                for my $path (File::Spec->rel2abs($file), $resolved) {
+                    while (1) {
+                        my @stat = stat $path;
+                        die "Root must own $path and deny group/other writes\n"
+                            unless @stat && $stat[4] == 0 && !($stat[2] & 0022);
+                        last if $path eq '/';
+                        $path =~ s{/[^/]+/?\z}{};
+                        $path = '/' unless length $path;
+                    }
+                }
+            };
+
+            # Validate every dependency, including modules loaded later and
+            # XS libraries, before importing application code as root.
+            $verify->($0);
+            File::Find::find(
+                {
+                    wanted => sub {
+                        die
+                            "Symbolic links are not allowed in the dedicated runtime: $File::Find::name\n"
+                            if -l $File::Find::name;
+                        $verify->($File::Find::name);
+                    },
+                    no_chdir => 1
+                },
+                Cwd::abs_path("$FindBin::RealBin/..")
+            );
+        }
+        lib->import($library);
+    }
+    else {
+        # Source/Carton and ordinary site installations retain their existing
+        # dependency environment. Only a contained prefix isolates @INC.
+        @INC = @inherited_inc;
+        my $source = "$FindBin::RealBin/../lib";
+        lib->import($source) if -f "$source/App/Outcrop.pm";
+    }
+}
+
 use strict;
 use warnings;
 
 use Cwd qw(abs_path);
-use FindBin;
-use lib "$FindBin::Bin/../lib";
 
 use Minion;
 use Mojo::File qw(path);
 
-use Outcrop::Config;
-use Outcrop::Disk;
-use Outcrop::Scan;
-use Outcrop::Store;
-use Outcrop::Worker;
+use App::Outcrop::Config;
+use App::Outcrop::Paths;
+use Mojo::Server::Hypnotoad;
+use App::Outcrop::Disk;
+use App::Outcrop::Scan;
+use App::Outcrop::Store;
+use App::Outcrop::Worker;
 
-my $mode = shift // '';
-die "Usage: script/outcrop web|worker\n"
+my $mode = shift // ($ENV{HYPNOTOAD_APP} ? 'web' : '');
+if ($mode eq '--version' && !@ARGV) {
+    require App::Outcrop;
+    print "Outcrop $App::Outcrop::VERSION\n";
+    exit 0;
+}
+if ($mode eq '--help' && !@ARGV) {
+    print "Usage: outcrop web|worker\n";
+    exit 0;
+}
+die "Usage: outcrop web|worker\n"
     unless ($mode eq 'web' || $mode eq 'worker') && !@ARGV;
 
 if ($mode eq 'web') {
     run_web();
 }
 else {
-    run_worker(Outcrop::Config->new);
+    run_worker(App::Outcrop::Config->new);
 }
 
 sub run_web {
     die "Web must run as an unprivileged user\n" unless $>;
 
-    # Keep the foreground entry point for manual operation. systemd starts
-    # Hypnotoad directly and tracks its manager through the PID file.
-    exec $^X, "$FindBin::Bin/../local/bin/hypnotoad", '-f', "$FindBin::Bin/outcrop-web";
-    die "Start Hypnotoad: $!";
+    # Hypnotoad re-executes this entry point on startup and graceful reload.
+    # Its application environment restores web mode when argv is empty.
+    $ENV{HYPNOTOAD_EXE} = abs_path($0);
+    $ENV{HYPNOTOAD_FOREGROUND} //= 1;
+    Mojo::Server::Hypnotoad->new->run(App::Outcrop::Paths::web_script()->to_string);
 }
 
 sub run_worker {
     my ($config) = @_;
 
-    my $app_root = abs_path("$FindBin::Bin/..");
+    my $app_root = App::Outcrop::Paths::root()->to_string;
     chdir $app_root or die "chdir: $!";
 
     # Disk access and scan execution are wired only into Worker. Web receives
     # a read-only scan store, a separate annotation DB, and the Minion queue.
-    my $store   = Outcrop::Store->new(config => $config, writable => 1);
-    my $disk    = Outcrop::Disk->new(config => $config, app_root => $app_root);
-    my $scanner = Outcrop::Scan->new(config => $config, store    => $store, disk => $disk);
-    my $worker  = Outcrop::Worker->new(
+    my $store   = App::Outcrop::Store->new(config => $config, writable => 1);
+    my $disk    = App::Outcrop::Disk->new(config => $config, app_root => $app_root);
+    my $scanner = App::Outcrop::Scan->new(config => $config, store    => $store, disk => $disk);
+    my $worker  = App::Outcrop::Worker->new(
         config  => $config,
         store   => $store,
         disk    => $disk,
@@ -69,7 +157,7 @@ sub initialize_session_secret {
     my $secret = path($config->state, 'web.secret');
     return if -f $secret;
 
-    require Outcrop;
-    $secret->spurt(Outcrop::random_id() . Outcrop::random_id());
+    require App::Outcrop;
+    $secret->spurt(App::Outcrop::random_id() . App::Outcrop::random_id());
     chmod 0640, $secret;
 }
