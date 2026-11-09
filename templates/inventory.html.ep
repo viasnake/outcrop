@@ -3,24 +3,24 @@
 % my @disks = @{$inventory->{disks}};
 % my @system_disks = grep { $_->{system_root} } @disks;
 % if ($has_host && !@system_disks) {
-%     unshift @disks, {name => $host->{identity}{disk}{name} // 'システム領域', system_root => 1, targets => []};
+%     unshift @disks, {name => $host->{identity}{disk}{name} // l('system_volume'), system_root => 1, targets => []};
 % }
 % my $host_selected = 0;
 % my $unavailable = $inventory->{stale} || @{$inventory->{blocked} // []};
 % if ($inventory->{stale}) {
-<p class="my-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-amber-900 wrap-anywhere">ディスク情報を更新できません。</p>
+<p class="my-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-amber-900 wrap-anywhere"><%= l('inventory_stale') %></p>
 % }
 % if (@{$inventory->{errors} // []}) {
 <details class="my-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-amber-900 wrap-anywhere">
-    <summary class="cursor-pointer font-semibold group-open:mb-5">ディスクを検出できません</summary>
+    <summary class="cursor-pointer font-semibold group-open:mb-5"><%= l('discovery_failed') %></summary>
     % for my $error (@{$inventory->{errors}}) {
-    <pre class="mt-3 font-mono text-xs whitespace-pre-wrap wrap-anywhere"><%= $error %></pre>
+    <pre class="mt-3 font-mono text-xs whitespace-pre-wrap wrap-anywhere"><%= $error eq 'Cannot retrieve disk information.' ? l('inventory_unavailable') : $error %></pre>
     % }
 </details>
 % }
 % if (@{$inventory->{blocked} // []}) {
 <aside class="my-5 rounded-md border border-red-200 bg-red-50 p-4 text-red-900 wrap-anywhere">
-    <strong>マウントが残っています。アンマウントするまでスキャンできません。</strong>
+    <strong><%= l('mounts_remain') %></strong>
     <ul class="mt-3 list-disc space-y-1 pl-5">
     % for my $mount (@{$inventory->{blocked}}) {
         <li><%= $mount %></li>
@@ -30,7 +30,7 @@
 % }
 
 <section class="my-6 min-w-0 rounded-lg border border-slate-200 bg-white p-4 sm:p-6">
-    <h2 class="mb-5 text-lg font-semibold">スキャンするディスク</h2>
+    <h2 class="mb-5 text-lg font-semibold"><%= l('select_disk') %></h2>
 
         <div class="space-y-4" data-disk-list>
         % for my $disk (@disks) {
@@ -47,9 +47,9 @@
                 <span><%= sprintf('%.1f GiB', $disk->{size} / 1073741824) %></span>
                 % }
                 % if (length($disk->{pttype} // '')) {
-                <span>パーティションテーブル: <%= $disk->{pttype} %></span>
+                <span><%= l('partition_table') %>: <%= $disk->{pttype} %></span>
                 % }
-                <span class="ml-auto text-slate-600"><%= $is_system ? 'システム' : $selectable ? '選択可' : '選択不可' %></span>
+                <span class="ml-auto text-slate-600"><%= $is_system ? l('system') : $selectable ? l('selectable') : l('unselectable') %></span>
             </div>
             % if ($disk->{serial} || $disk->{wwn}) {
             <p class="mb-3 px-4 text-xs text-slate-600 wrap-anywhere">
@@ -66,7 +66,7 @@
                 <input class="mt-1.5 size-4 shrink-0 accent-blue-700" type="radio" name="target" value="<%= $host->{token} %>" data-target-kind="host"
                        <%= $checked ? 'checked' : '' %> required <%= $unavailable ? 'disabled' : '' %>>
                 <span>
-                    <strong>システム領域</strong>
+                    <strong><%= l('system_volume') %></strong>
                     <%= display($host->{identity}{partition}{fstype}) %>
                 </span>
             </label>
@@ -83,9 +83,9 @@
                        required <%= $disabled ? 'disabled' : '' %>>
                 <span>
                     <strong><%= $target->{name} %></strong>
-                    ファイルシステム: <%= length($target->{fstype} // '') ? $target->{fstype} : 'なし / 未検出' %>
+                    <%= l('filesystem') %>: <%= length($target->{fstype} // '') ? $target->{fstype} : l('filesystem_none') %>
                     · <%= sprintf('%.1f GiB', ($target->{size} // 0) / 1073741824) %>
-                    <small class="block text-xs text-slate-500"><%= @mountpoints ? join(', ', @mountpoints) : '未マウント' %></small>
+                    <small class="block text-xs text-slate-500"><%= @mountpoints ? join(', ', @mountpoints) : l('not_mounted') %></small>
                     % if (@$target_reasons) {
                     <span class="mt-1 block text-xs text-red-700"><%= join(' · ', @$target_reasons) %></span>
                     % }
@@ -93,7 +93,7 @@
             </label>
             % }
             % if (!@{$disk->{targets}}) {
-            <p class="mb-3 px-4 text-xs text-slate-600 wrap-anywhere">スキャンできるファイルシステムがありません。</p>
+            <p class="mb-3 px-4 text-xs text-slate-600 wrap-anywhere"><%= l('no_filesystem') %></p>
             % }
             % }
         </div>

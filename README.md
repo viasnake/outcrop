@@ -1,5 +1,7 @@
 # Outcrop
 
+日本語 | [English](README.en.md)
+
 Linux ファイルシステムから Syft で SBOM を生成し、Grype で脆弱性を評価する Web アプリケーションです。ディスクを読み取る Worker と、結果を表示する Web を別プロセスで実行します。
 
 ## 対応環境
@@ -109,6 +111,8 @@ sudo -u outcrop "$outcrop_prefix/bin/outcrop" web
 
 ## 利用と制約
 
+画面は日本語・英語に対応しています。初回はブラウザーの言語設定に従い、未対応の言語では英語を表示します。ヘッダーの言語メニューで「日本語」または「English」を選ぶと、選択をブラウザーに1年間保存します。日時は UTC で表示します。スキャン結果・ログ・入力したタグやメモの原文は保持します。
+
 実行ホストの [http://127.0.0.1:8080](http://127.0.0.1:8080) を開きます。既定では localhost からの接続だけを受け付けます。別の端末からは SSH ポート転送を使うか、LAN 公開が必要な場合だけ Web の待受先を明示してください。
 
 ```sh
@@ -207,7 +211,7 @@ make dist
 主要な Perl テストは root 権限・実ディスクを必要としません。実際の Syft を使う追加検証は `OUTCROP_TEST_SYFT=/usr/local/bin/syft mise run test` で実行できます。
 
 ```sh
-# 表示キャッシュのブラウザーテスト（Node.js 22 以降）
+# 日英表示と表示キャッシュのブラウザーテスト（Node.js 22 以降）
 npm ci
 npx playwright install chromium
 mise run test:results

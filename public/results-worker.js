@@ -11,9 +11,9 @@ const pause = (milliseconds, signal) => new Promise((resolve, reject) => {
   if (signal.aborted) abort();
 });
 
-async function downloadPage(url, signal) {
+async function downloadPage(url, signal, locale) {
   while (true) {
-    const response = await fetch(url, {signal});
+    const response = await fetch(url, {signal, headers: {'Accept-Language': locale === 'ja' ? 'ja' : 'en'}});
     if (response.status === 202 || response.status === 429) {
       await pause(1000, signal);
       continue;
@@ -21,7 +21,9 @@ async function downloadPage(url, signal) {
     const page = await response.json();
     if (!response.ok) throw new Error(page.error || `HTTP ${response.status}`);
     if (!ResultCache.validPage(page) || page.revision !== new URL(url).searchParams.get('version')) {
-      throw new Error('結果の形式を確認できませんでした。画面を更新してください。');
+      const error = new Error('Invalid result format');
+      error.code = 'result_format_invalid';
+      throw error;
     }
     return page;
   }
@@ -42,7 +44,7 @@ async function sendWindow(table, request) {
     const last = table.last?.url === key ? table.last : null;
     let page = last ? last.page : await table.cache?.read(key);
     let saved = last ? last.saved : Boolean(page);
-    if (!page) page = await downloadPage(key, controller.signal);
+    if (!page) page = await downloadPage(key, controller.signal, request.locale);
     if (controller.signal.aborted || clearing) return;
     const current = table.last = {url: key, page, saved};
     postMessage({type: 'rows', kind: table.kind, sequence: request.sequence, ...page});
@@ -61,7 +63,7 @@ async function sendWindow(table, request) {
     postMessage({type: 'cache-ready', kind: table.kind, available: Boolean(table.cache), saved});
   } catch (error) {
     if (controller.signal.aborted) return;
-    postMessage({type: 'failure', kind: table.kind, sequence: request.sequence, message: error.message});
+    postMessage({type: 'failure', kind: table.kind, sequence: request.sequence, message: error.message, code: error.code});
     postMessage({type: 'cache-ready', kind: table.kind, available: Boolean(table.cache), saved: null});
   }
 }

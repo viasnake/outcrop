@@ -76,7 +76,7 @@ class ResultTable {
       this.pageStart = 0;
       this.viewport.scrollTop = 0;
     }
-    this.worker.postMessage({type: 'window', kind: this.kind, sequence: ++this.sequence,
+    this.worker.postMessage({type: 'window', kind: this.kind, sequence: ++this.sequence, locale: OutcropI18n.locale,
       query: this.search.value, column: this.column, descending: this.descending,
       start: this.pageStart + Math.max(0, Math.floor(this.viewport.scrollTop / rowHeight) - 8)});
   }
@@ -115,21 +115,26 @@ class ResultTable {
     if (remaining > 0) fragment.append(this.spacer(remaining * rowHeight));
     this.body.replaceChildren(fragment);
     this.element.querySelector('table').setAttribute('aria-rowcount', result.count + 1);
-    const format = value => value.toLocaleString();
+    const format = OutcropI18n.number;
     this.pager.hidden = result.count <= pageSize;
-    this.pager.querySelector('[data-page-range]').textContent = `${format(this.pageStart + 1)}–${format(this.pageStart + pageCount)} / ${format(result.count)} 件`;
+    this.pager.querySelector('[data-page-range]').textContent = OutcropI18n.t('result_range', {
+      start: format(this.pageStart + 1), end: format(this.pageStart + pageCount), count: format(result.count),
+    });
     this.pager.querySelector('[data-page-step="-1"]').disabled = this.pageStart === 0;
     this.pager.querySelector('[data-page-step="1"]').disabled = this.pageStart + pageSize >= result.count;
-    this.count.textContent = result.count === result.total ? `${format(result.total)} 件` : `${format(result.count)} / ${format(result.total)} 件`;
+    const countKey = result.count === result.total ? 'result_count' : 'result_filtered';
+    this.count.textContent = OutcropI18n.t(countKey + (result.total === 1 ? '_one' : ''), {
+      count: format(result.count), total: format(result.total),
+    });
     this.viewport.hidden = result.count === 0;
     this.status.hidden = result.count > 0;
-    this.status.textContent = result.count === 0 ? '該当する項目はありません。' : '';
+    this.status.textContent = result.count === 0 ? OutcropI18n.t('no_results') : '';
   }
 
   fail(message) {
     if (this.progress) this.progress.hidden = true;
     this.status.hidden = false;
-    this.status.textContent = message || '読み込めませんでした。画面を更新するか JSON をダウンロードしてください。';
+    this.status.textContent = message || OutcropI18n.t('table_load_failed');
   }
 }
 
@@ -138,7 +143,7 @@ const buildKinds = new Set(buildForms.map(form => form.dataset.resultBuild));
 const resultElements = Array.from(document.querySelectorAll('[data-result-table]')).filter(element => element.dataset.source || buildKinds.has(element.dataset.resultTable));
 if (resultElements.length) {
   if (typeof Worker === 'undefined') {
-    for (const element of resultElements) element.querySelector('[data-result-status]').textContent = 'このブラウザーでは一覧を表示できません。JSON をダウンロードしてください。';
+    for (const element of resultElements) element.querySelector('[data-result-status]').textContent = OutcropI18n.t('browser_unsupported');
   } else {
     const worker = new Worker('/results-worker.js');
     const tables = new Map(resultElements.map(element => [element.dataset.resultTable, new ResultTable(element, worker)]));
@@ -147,7 +152,7 @@ if (resultElements.length) {
     const clearCache = document.querySelector('[data-clear-cache]');
     const cacheStates = new Map();
     let persistenceRequested = false;
-    const resultNames = new Map([['packages', 'パッケージ'], ['matches', '脆弱性']]);
+    const resultNames = new Map([['packages', OutcropI18n.t('packages')], ['matches', OutcropI18n.t('matches')]]);
     worker.onmessage = ({data}) => {
       if (data.type.startsWith('cache-')) {
         if (data.type === 'cache-ready') {
@@ -162,21 +167,21 @@ if (resultElements.length) {
           const failed = sources.filter(source => cacheStates.get(source.kind)?.saved === false);
           cacheStatus.hidden = failed.length === 0;
           cacheStatus.textContent = failed.length
-            ? `${failed.map(source => resultNames.get(source.kind)).join('・')}の一覧をこのブラウザーに保存できませんでした。`
+            ? OutcropI18n.t('cache_save_failed', {names: failed.map(source => resultNames.get(source.kind)).join(OutcropI18n.t('list_separator'))})
             : '';
         } else {
           clearCache.disabled = false;
           cacheStatus.hidden = false;
           cacheStatus.textContent = data.type === 'cache-cleared'
-            ? 'キャッシュを削除しました。'
-            : 'キャッシュを削除できませんでした。';
+            ? OutcropI18n.t('cache_cleared')
+            : OutcropI18n.t('cache_clear_failed');
         }
         return;
       }
       const table = tables.get(data.kind);
       if (data.type === 'ready') table.ready();
       if (data.type === 'rows') table.render(data);
-      if (data.type === 'failure' && data.sequence === table.sequence) table.fail(data.message);
+      if (data.type === 'failure' && data.sequence === table.sequence) table.fail(data.code ? OutcropI18n.t(data.code) : data.message);
     };
     clearCache.addEventListener('click', () => {
       clearCache.disabled = true;
@@ -193,7 +198,7 @@ if (resultElements.length) {
       clearCache.disabled = true;
       table.loaded = false;
       table.sequence++;
-      table.status.textContent = '読み込み中…';
+      table.status.textContent = OutcropI18n.t('loading');
       table.status.hidden = false;
       if (table.progress) table.progress.hidden = false;
       worker.postMessage({type: 'load', sources: [source]});
@@ -221,7 +226,7 @@ for (const form of buildForms) {
     busy = true;
     button.disabled = true;
     progress.hidden = false;
-    message.textContent = '作成中…';
+    message.textContent = OutcropI18n.t('building');
     try {
       if (!statusUrl) {
         const result = await json(form.action, {method: 'POST', headers: {Accept: 'application/json'}, body: new URLSearchParams(new FormData(form))});
@@ -231,16 +236,16 @@ for (const form of buildForms) {
         const result = await json(statusUrl);
         if (result.state === 'ready') {
           section.dataset.source = result.url;
-          button.textContent = `${section.dataset.resultTable === 'packages' ? 'パッケージ' : '脆弱性'}一覧を再作成`;
+          button.textContent = OutcropI18n.t(`rebuild_${section.dataset.resultTable}`);
           message.textContent = '';
           document.dispatchEvent(new CustomEvent('outcrop:result-ready', {detail: {kind: section.dataset.resultTable, url: result.url}}));
           break;
         }
-        if (result.state !== 'running') throw new Error('作成に失敗しました。元JSONとサーバーの空き容量を確認して再実行してください。');
+        if (result.state !== 'running') throw new Error(OutcropI18n.t('build_failed_detail'));
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     } catch (error) {
-      message.textContent = error.message || '作成に失敗しました。再実行してください。';
+      message.textContent = error.message || OutcropI18n.t('build_failed');
     } finally {
       busy = false;
       button.disabled = false;

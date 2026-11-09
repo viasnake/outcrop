@@ -99,6 +99,7 @@ my $app   = App::Outcrop->new(
 );
 $app->log->level('error');
 my $t = Test::Mojo->new($app);
+$t->ua->on(start => sub { $_[1]->req->headers->accept_language('ja') });
 
 # Exercise the HTTP boundary with the same read-only scan store used by Web.
 # Assertions concern data, authorization, and side effects, not page layout.
@@ -213,12 +214,10 @@ for my $host ('localhost:8080', '127.0.0.1:8080', '192.0.2.10:8080', 'scanner.ex
         '/scans' => {Host => $host} => form => {
             scan_id => 'b' x 32,
             target  => $token,
-            clone   => 'yes'
         }
     )->status_is(403);
 }
-$t->post_ok('/scans' => form => {scan_id => 'b' x 32, target => $token, clone => 'yes'})
-    ->status_is(403);
+$t->post_ok('/scans' => form => {scan_id => 'b' x 32, target => $token})->status_is(403);
 is(job_count(), 0, 'Rejected requests cannot enqueue privileged scan work');
 
 $t->get_ok('/')->status_is(200);
@@ -228,7 +227,6 @@ my %form   = (
     csrf_token => $csrf,
     scan_id    => $new_id,
     target     => $token,
-    clone      => 'yes',
     tags       => ['clone-test', '日本語', 'team,blue'],
     new_tag    => 'pending-tag',
     note       => '',
@@ -240,7 +238,7 @@ is_deeply(
     'Submission preserves separate Unicode tags, literal commas, and the unfinished input'
 );
 $t->post_ok('/scans' => form => \%form)->status_is(302);
-is(job_count(), 1, 'Resubmitting a form cannot schedule the same disk scan twice');
+is(job_count(), 1, 'A clone scan needs no confirmation flag and cannot be scheduled twice');
 
 # Rejected edits must leave all existing annotations and original artifacts intact.
 $t->post_ok("/scans/$id/tags" => form => {operation => 'add', tag => 'denied'})->status_is(403);
@@ -317,11 +315,11 @@ $inventory->{host} = {kind => 'host', selectable => 1, token => $host_token};
 $store->atomic_json("$root/inventory.json", $inventory);
 my %host_form = (csrf_token => $csrf, scan_id => App::Outcrop::random_id(), target => $host_token);
 $t->post_ok('/scans' => form => \%host_form)->status_is(303);
-is(job_count(), 2, 'Live-host scanning does not require a false clone claim');
+is(job_count(), 2, 'Live-host scanning uses the same submission contract as clone scanning');
 $host_form{scan_id} = App::Outcrop::random_id();
 $host_form{target}  = $token;
 $host_form{kind}    = 'host';
-$t->post_ok('/scans' => form => \%host_form)->status_is(400);
+$t->post_ok('/scans' => form => \%host_form)->status_is(409);
 $host_form{target} = $host_token;
 $inventory->{updated_at} = time - 60;
 $store->atomic_json("$root/inventory.json", $inventory);
@@ -361,7 +359,7 @@ $t->get_ok('/inventory')
     ->element_exists('input[value="' . $new_token . '"]')
     ->element_exists_not('textarea[name="note"]');
 my $async_id   = App::Outcrop::random_id();
-my %async_form = (csrf_token => $csrf, scan_id => $async_id, target => $new_token, clone => 'yes');
+my %async_form = (csrf_token => $csrf, scan_id => $async_id, target => $new_token);
 $t->post_ok('/scans' => {Accept => 'application/json'} => form => \%async_form)
     ->status_is(202)
     ->json_is('/id',  $async_id)
@@ -428,7 +426,6 @@ my %bios_form = (
     csrf_token => $csrf,
     scan_id    => App::Outcrop::random_id(),
     target     => $bios_target->{token},
-    clone      => 'yes',
 );
 $t->post_ok('/scans' => form => \%bios_form)->status_is(409);
 is(job_count(), 3, 'A forged BIOS boot selection cannot enqueue a scan');

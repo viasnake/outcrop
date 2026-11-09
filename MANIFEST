@@ -3,6 +3,7 @@ Changes
 LICENSE
 MANIFEST
 Makefile.PL
+README.en.md
 README.md
 cpanfile
 cpanfile.snapshot
@@ -10,6 +11,7 @@ lib/App/Outcrop/Annotations.pm
 lib/App/Outcrop/Command.pm
 lib/App/Outcrop/Config.pm
 lib/App/Outcrop/Disk.pm
+lib/App/Outcrop/I18N.pm
 lib/App/Outcrop/Paths.pm
 lib/App/Outcrop/ResultStream.pm
 lib/App/Outcrop/Results.pm
@@ -21,6 +23,9 @@ lib/App/Outcrop.pm
 mise.toml
 package-lock.json
 package.json
+public/i18n.js
+public/locales/en.json
+public/locales/ja.json
 public/outcrop.js
 public/result-cache.js
 public/results-worker.js
@@ -34,6 +39,7 @@ t/command.t
 t/concurrency.t
 t/disk.t
 t/exclusions.t
+t/i18n.t
 t/results-cache.mjs
 t/results.t
 t/scan.t
@@ -44,4 +50,5 @@ templates/history.html.ep
 templates/index.html.ep
 templates/inventory.html.ep
 templates/layouts/default.html.ep
+templates/not_found.html.ep
 templates/scan.html.ep

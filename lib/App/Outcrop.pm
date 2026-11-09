@@ -12,6 +12,7 @@ use Mojo::IOLoop::Subprocess;
 use Mojo::Util qw(decode);
 
 use App::Outcrop::Config;
+use App::Outcrop::I18N;
 use App::Outcrop::Paths;
 use App::Outcrop::Scan;
 use App::Outcrop::Store;
@@ -28,6 +29,7 @@ sub startup {
     $self->static->paths([App::Outcrop::Paths::assets()->child('public')->to_string]);
     $self->_configure_sessions;
     $self->store->annotations->initialize;
+    App::Outcrop::I18N->register($self);
     $self->_register_display_helpers;
     $self->hook(before_dispatch => sub { $self->_protect_request(@_) });
 
@@ -101,7 +103,7 @@ sub inventory {
     my $inventory = eval { $self->store->read_json($file) };
     $inventory //= {
         disks  => [],
-        errors => ['ディスク情報を取得できません。'],
+        errors => ['Cannot retrieve disk information.'],
     };
     $inventory->{stale} = time - ($inventory->{updated_at} // 0) > 30;
     return $inventory;
@@ -125,57 +127,45 @@ sub _register_display_helpers {
     $self->helper(
         display => sub {
             my ($controller, $value) = @_;
-            return '不明' unless defined $value && !ref($value) && length($value);
+            return $controller->l('unknown')
+                unless defined $value && !ref($value) && length($value);
             return $value;
         }
     );
 
-    my %labels = (
-        queued          => '待機中',
-        running         => '実行中',
-        completed       => '完了',
-        partial         => '一部完了',
-        failed          => '失敗',
-        interrupted     => '中断',
-        not_needed      => '未マウント',
-        mounted         => 'マウント中',
-        unmounted       => 'アンマウント済み',
-        needs_cleanup   => '手動アンマウントが必要',
-        validating      => '対象の再確認',
-        mounting        => '読み取り専用マウント',
-        inspecting      => 'ルートファイルシステムとスキャン範囲の確認',
-        sbom            => 'SBOM 生成',
-        unmounting      => 'アンマウント',
-        vulnerabilities => '脆弱性照合',
-        results         => '一覧データ作成',
-        finished        => '処理終了',
-    );
     $self->helper(
         label => sub {
             my ($controller, $value) = @_;
-            return $labels{$value // ''} // $value // '不明';
+            return $controller->l('unknown') unless defined $value && length $value;
+            return $controller->l($value);
         }
     );
     $self->helper(
         exclusion_reasons => sub {
             my ($controller, $reasons) = @_;
-            return $self->_exclusion_reasons($reasons);
+            return $self->_exclusion_reasons($controller, $reasons);
         }
     );
 }
 
 sub _exclusion_reasons {
-    my ($self, $reasons) = @_;
+    my ($self, $controller, $reasons) = @_;
 
     # Several partitions can report the same disk-wide exclusion. Present each
     # reason once while preserving the original diagnostic data in inventory.
     my @labels = (
-        [qr/\A(?:Mounted filesystem|Scanner storage:|Active swap|Referenced)/, '使用中'],
-        [qr/\ANo hardware serial/,                                             '識別情報を取得できません'],
-        [qr/\A(?:Ambiguous filesystem|Partition table present)/,               '構成を判別できません'],
-        [qr/\AOnly ext4/,                                                      '対象外のファイルシステム'],
-        [qr/\ABIOS boot partition:/,            'BIOS boot partition（起動用・スキャン対象外）'],
-        [qr/\ACannot resolve scanner storage:/, '使用状態を確認できません'],
+        [
+            qr/\A(?:Mounted filesystem|Scanner storage:|Active swap|Referenced)/,
+            $controller->l('in_use')
+        ],
+        [qr/\ANo hardware serial/, $controller->l('no_identity')],
+        [
+            qr/\A(?:Ambiguous filesystem|Partition table present)/,
+            $controller->l('ambiguous_layout')
+        ],
+        [qr/\AOnly ext4/,                       $controller->l('unsupported_filesystem')],
+        [qr/\ABIOS boot partition:/,            $controller->l('bios_boot')],
+        [qr/\ACannot resolve scanner storage:/, $controller->l('storage_unresolved')],
     );
     my %seen;
     my @translated;
@@ -189,9 +179,16 @@ sub _exclusion_reasons {
 
         # Keep the device and detected layout visible instead of collapsing
         # distinct unsupported partitions into a single generic label.
-        $label =~ s/\AUnsupported partition table/未対応のパーティションテーブル/;
-        $label =~ s/\AUnsupported or unknown partition/未対応または不明なパーティション/;
-        $label =~ s/\AUnsupported/未対応の構成/;
+        if ($label =~ /\AUnsupported partition table/) {
+            $label =~ s/\AUnsupported partition table/$controller->l('unsupported_table')/e;
+        }
+        elsif ($label =~ /\AUnsupported or unknown partition/) {
+            $label =~
+                s/\AUnsupported or unknown partition/$controller->l('unsupported_partition')/e;
+        }
+        else {
+            $label =~ s/\AUnsupported/$controller->l('unsupported_layout')/e;
+        }
         push @translated, $label unless $seen{$label}++;
     }
     return \@translated;
@@ -263,7 +260,7 @@ sub _show_history {
 sub _start_scan {
     my ($self, $controller) = @_;
 
-    return $controller->render(text => 'Invalid CSRF token', status => 403)
+    return $controller->render(text => $controller->l('invalid_csrf'), status => 403)
         if $controller->validation->csrf_protect->has_error('csrf_token');
     my @tags      = @{$controller->every_param('tags')};
     my $draft_tag = $controller->param('new_tag') // '';
@@ -274,10 +271,10 @@ sub _start_scan {
         note  => $controller->param('note') // '',
         token => $controller->param('target'),
     };
-    return $controller->render(text => 'タグを確認してください。', status => 400)
+    return $controller->render(text => $controller->l('invalid_tags'), status => 400)
         unless defined $request->{tags};
     my $scanner = App::Outcrop::Scan->new(store => $self->store);
-    return $controller->render(text => '入力値を確認してください。', status => 400)
+    return $controller->render(text => $controller->l('invalid_input'), status => 400)
         unless eval { $scanner->validate_request($request) };
 
     # Hold the submission lock across lookup and enqueue. Browser-side button
@@ -290,13 +287,10 @@ sub _start_scan {
     return $self->_submission_response($controller, $id, 200) if $self->_submission_exists($id);
     my $target = $self->_selectable_target($request->{token});
     return $controller->render(
-        text   => '対象情報が古いか選択できません。一覧を更新してください。',
+        text   => $controller->l('target_unavailable'),
         status => 409,
     ) unless $target;
-    return $controller->render(text => 'クローンディスクであることの確認が必要です。', status => 400)
-        unless ($target->{kind} // '') eq 'host' || ($controller->param('clone') // '') eq 'yes';
-
-    return $controller->render(text => 'この対象はすでに待機中または実行中です。', status => 409)
+    return $controller->render(text => $controller->l('already_queued'), status => 409)
         if grep { $_->{token} eq $request->{token} } @{$self->pending_scans};
     $self->queue->enqueue(scan => [$request], {attempts => 1});
     return $self->_submission_response($controller, $id, 202);
@@ -384,7 +378,7 @@ sub _show_scan {
         artifacts     => $artifacts,
         versions      => \%versions,
         result_states => \%result_states,
-        log           => $self->_read_log_tail($artifacts->{log}),
+        log           => $self->_read_log_tail($controller, $artifacts->{log}),
     );
     $controller->render(template => 'scan');
 }
@@ -398,9 +392,12 @@ sub _result_page {
     my $results  = App::Outcrop::Results->new(config => $self->settings);
     my $revision = $results->revision($source);
     my $file     = $results->available($id, $kind, $revision);
-    return $controller->render(status => 409, json => {error => '一覧データを作成してください。'}) unless $file;
+    return $controller->render(
+        status => 409,
+        json   => {error => $controller->l('create_list_first')}
+    ) unless $file;
     my $version = $results->version($file, $revision);
-    return $controller->render(status => 409, json => {error => '結果が更新されました。画面を更新してください。'})
+    return $controller->render(status => 409, json => {error => $controller->l('results_changed')})
         unless ($controller->param('version') // '') eq $version;
     my $request = {
         version    => $version,
@@ -409,7 +406,7 @@ sub _result_page {
         column     => $controller->param('column'),
         descending => ($controller->param('descending') // '') eq '1',
     };
-    return $controller->render(status => 400, json => {error => '検索条件を確認してください。'})
+    return $controller->render(status => 400, json => {error => $controller->l('invalid_search')})
         if length($request->{query}) > 500
         || $request->{start} !~ /\A[0-9]{1,9}\z/
         || (defined($request->{column}) && $request->{column} !~ /\A[0-4]\z/);
@@ -431,7 +428,10 @@ sub _result_page {
             $self->{result_queries}--;
             if ($error) {
                 $self->log->error("Result query $key: $error");
-                $controller->render(status => 500, json => {error => '結果を読み込めませんでした。画面を更新してください。'});
+                $controller->render(
+                    status => 500,
+                    json   => {error => $controller->l('result_load_failed')}
+                );
             }
             else {
                 $controller->render(json => $page);
@@ -442,20 +442,20 @@ sub _result_page {
 
 sub _rebuild_result {
     my ($self, $controller) = @_;
-    return $controller->render(status => 403, json => {error => 'Invalid CSRF token'})
+    return $controller->render(status => 403, json => {error => $controller->l('invalid_csrf')})
         if $controller->validation->csrf_protect->has_error('csrf_token');
     my ($id, $kind) = map { $controller->param($_) // '' } qw(id kind);
     return $controller->reply->not_found unless $kind eq 'syft' || $kind eq 'grype';
     my $scan = $self->store->get($id);
     return $controller->reply->not_found unless $scan;
-    return $controller->render(status => 409, json => {error => 'スキャンの完了後に実行してください。'})
+    return $controller->render(status => 409, json => {error => $controller->l('wait_scan')})
         if $scan->{status} eq 'running' || $scan->{status} eq 'queued';
     my $source = $self->store->artifact($id, $kind);
     return $controller->reply->not_found unless $source;
     my $results = App::Outcrop::Results->new(config => $self->settings);
     my $file    = $results->location($id, $kind);
     my $lock    = $results->build_lock($file);
-    return $controller->render(status => 409, json => {error => 'ほかの一覧を作成中です。完了後に再実行してください。'})
+    return $controller->render(status => 409, json => {error => $controller->l('wait_build')})
         unless $lock;
     my $revision = $results->revision($source);
     my $status   = {state => 'running', token => random_id()};
@@ -501,7 +501,7 @@ sub _result_build_status {
     return $controller->reply->not_found unless $self->store->artifact($id, $kind);
     my $results = App::Outcrop::Results->new(config => $self->settings);
     my $status  = $results->build_status($results->location($id, $kind));
-    return $controller->render(status => 409, json => {error => '画面を更新して状態を確認してください。'})
+    return $controller->render(status => 409, json => {error => $controller->l('refresh_status')})
         unless ($controller->param('token') // '') eq ($status->{token} // '');
     my $response = {state => $status->{state}};
 
@@ -527,15 +527,15 @@ sub _artifacts {
 
 sub _update_tags {
     my ($self, $controller) = @_;
-    return $controller->render(text => 'Invalid CSRF token', status => 403)
+    return $controller->render(text => $controller->l('invalid_csrf'), status => 403)
         if $controller->validation->csrf_protect->has_error('csrf_token');
     my $scan = $self->_find_scan($controller->param('id'));
     return $controller->reply->not_found unless $scan;
     my $operation = $controller->param('operation') // '';
-    return $controller->render(text => 'Invalid tag operation', status => 400)
+    return $controller->render(text => $controller->l('invalid_tag_operation'), status => 400)
         unless $operation eq 'add' || $operation eq 'remove';
     my $values = eval { App::Outcrop::Tags->validate([$controller->param('tag')]); };
-    return $controller->render(text => 'タグは20個まで、各120文字以内で入力してください。', status => 400)
+    return $controller->render(text => $controller->l('tag_limit'), status => 400)
         unless defined $values;
     my $tags = eval {
         $self->store->annotations->change_tags($scan->{id}, $scan->{tags}, $operation, $values);
@@ -543,7 +543,7 @@ sub _update_tags {
     unless (defined $tags) {
         my $error = $@;
         die $error unless $error =~ /\A(?:Invalid tag|Tag too long|Remove exactly)/;
-        return $controller->render(text => 'タグは20個まで、各120文字以内で入力してください。', status => 400);
+        return $controller->render(text => $controller->l('tag_limit'), status => 400);
     }
     return $controller->render(json => {tags => $tags})
         if ($controller->req->headers->accept // '') eq 'application/json';
@@ -553,12 +553,12 @@ sub _update_tags {
 
 sub _update_note {
     my ($self, $controller) = @_;
-    return $controller->render(text => 'Invalid CSRF token', status => 403)
+    return $controller->render(text => $controller->l('invalid_csrf'), status => 403)
         if $controller->validation->csrf_protect->has_error('csrf_token');
     my $scan = $self->_find_scan($controller->param('id'));
     return $controller->reply->not_found unless $scan;
     my $note = eval { App::Outcrop::Annotations->validate_note($controller->param('note')); };
-    return $controller->render(text => 'メモは2000文字以内で入力してください。', status => 400)
+    return $controller->render(text => $controller->l('note_limit'), status => 400)
         unless defined $note;
     $self->store->annotations->save_note($scan->{id}, $note);
     return $controller->render(json => {note => $note})
@@ -575,7 +575,7 @@ sub _page_number {
 }
 
 sub _read_log_tail {
-    my ($self, $file) = @_;
+    my ($self, $controller, $file) = @_;
 
     return '' unless $file;
     open my $handle, '<:raw', $file or die "Log: $!";
@@ -584,7 +584,7 @@ sub _read_log_tail {
     }
 
     local $/;
-    return decode('UTF-8', scalar(<$handle>) // '') // 'ログはダウンロードして確認してください。';
+    return decode('UTF-8', scalar(<$handle>) // '') // $controller->l('download_log');
 }
 
 sub _download_artifact {
